@@ -53,7 +53,7 @@ object WidgetUpdater {
 
         fun serviceIntent(action: String, code: Int): PendingIntent {
             val intent = Intent(context, PlaybackService::class.java).apply { this.action = action }
-            return PendingIntent.getService(
+            return PendingIntent.getForegroundService(
                 context, code, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -61,7 +61,6 @@ object WidgetUpdater {
 
         val playIcon = if (lastIsPlaying) "⏸" else "▶"
 
-        // 1. Обновляем виджет 2x2
         val gridIds = manager.getAppWidgetIds(ComponentName(context, GridWidgetProvider::class.java))
         for (id in gridIds) {
             val views = RemoteViews(context.packageName, R.layout.widget_grid)
@@ -78,7 +77,6 @@ object WidgetUpdater {
             manager.updateAppWidget(id, views)
         }
 
-        // 2. Обновляем компактный виджет-полоску
         val barIds = manager.getAppWidgetIds(ComponentName(context, BarWidgetProvider::class.java))
         for (id in barIds) {
             val views = RemoteViews(context.packageName, R.layout.widget_bar)
