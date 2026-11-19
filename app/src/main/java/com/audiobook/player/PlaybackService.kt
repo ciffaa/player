@@ -88,8 +88,8 @@ class PlaybackService : MediaSessionService() {
     private fun restoreSavedBook(player: Player): Boolean {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val uriStr = prefs.getString("folder_uri", null) ?: return false
-        val startIndex = prefs.getInt("last_index", 0)
-        val startPos = prefs.getLong("last_pos", 0L)
+        val startIndex = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
+        val startPos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
 
         val dir = DocumentFile.fromTreeUri(this, Uri.parse(uriStr)) ?: return false
         val bookName = dir.name ?: "Аудиокнига"
@@ -143,10 +143,15 @@ class PlaybackService : MediaSessionService() {
     private fun savePosition(player: Player) {
         if (player.mediaItemCount == 0) return
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        prefs.edit()
+        val currentUri = prefs.getString("folder_uri", null)
+        val editor = prefs.edit()
             .putInt("last_index", player.currentMediaItemIndex)
             .putLong("last_pos", player.currentPosition)
-            .apply()
+        if (currentUri != null) {
+            editor.putInt("idx_$currentUri", player.currentMediaItemIndex)
+            editor.putLong("pos_$currentUri", player.currentPosition)
+        }
+        editor.apply()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
