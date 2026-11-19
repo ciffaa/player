@@ -63,7 +63,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#121212"))
-            setPadding(48, 96, 48, 48)
+            setPadding(36, 96, 36, 48)
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
@@ -121,37 +121,41 @@ class MainActivity : Activity() {
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            weightSum = 5f
         }
 
-        val prevBtn = Button(this).apply {
-            text = "⏮"
-            setOnClickListener { controller?.seekToPreviousMediaItem() }
-        }
-        val back15Btn = Button(this).apply {
-            text = "-15с"
-            setOnClickListener {
-                controller?.let { it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0)) }
-            }
-        }
-        playPauseBtn = Button(this).apply {
-            text = "▶"
-            setOnClickListener {
-                controller?.let { if (it.isPlaying) it.pause() else it.play() }
-            }
-        }
-        val fwd30Btn = Button(this).apply {
-            text = "+30с"
-            setOnClickListener {
-                controller?.let {
-                    val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
-                    it.seekTo(target)
+        fun makeControlButton(label: String, onClick: () -> Unit): Button {
+            return Button(this).apply {
+                text = label
+                textSize = 14f
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(4, 24, 4, 24)
+                setOnClickListener { onClick() }
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    setMargins(6, 0, 6, 0)
                 }
             }
         }
-        val nextBtn = Button(this).apply {
-            text = "⏭"
-            setOnClickListener { controller?.seekToNextMediaItem() }
+
+        val prevBtn = makeControlButton("⏮") { controller?.seekToPreviousMediaItem() }
+        val back15Btn = makeControlButton("-15с") {
+            controller?.let { it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0)) }
         }
+        playPauseBtn = makeControlButton("▶") {
+            controller?.let { if (it.isPlaying) it.pause() else it.play() }
+        }
+        val fwd30Btn = makeControlButton("+30с") {
+            controller?.let {
+                val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
+                it.seekTo(target)
+            }
+        }
+        val nextBtn = makeControlButton("⏭") { controller?.seekToNextMediaItem() }
 
         controlsRow.addView(prevBtn)
         controlsRow.addView(back15Btn)
@@ -159,7 +163,10 @@ class MainActivity : Activity() {
         controlsRow.addView(fwd30Btn)
         controlsRow.addView(nextBtn)
 
-        root.addView(pickFolderBtn)
+        root.addView(pickFolderBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(bookTitleView)
         root.addView(chapterTitleView)
         root.addView(seekBar, LinearLayout.LayoutParams(
@@ -167,7 +174,10 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         root.addView(timeView)
-        root.addView(controlsRow)
+        root.addView(controlsRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
 
         setContentView(root)
     }
@@ -222,17 +232,28 @@ class MainActivity : Activity() {
         loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false)
     }
 
+    private fun collectAudioFiles(dir: DocumentFile, audioExt: List<String>, out: MutableList<DocumentFile>) {
+        val entries = dir.listFiles().sortedBy { it.name?.lowercase() }
+        for (entry in entries) {
+            if (entry.isDirectory) {
+                collectAudioFiles(entry, audioExt, out)
+            } else if (entry.isFile) {
+                val name = entry.name?.lowercase() ?: ""
+                if (audioExt.any { name.endsWith(it) }) {
+                    out.add(entry)
+                }
+            }
+        }
+    }
+
     private fun loadFolder(treeUri: Uri, startIndex: Int, startPos: Long, autoPlay: Boolean) {
         val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return
         val bookName = dir.name ?: "Аудиокнига"
-        val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".wav", ".flac", ".aac")
+        bookTitleView.text = bookName
+        val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
 
-        val files = dir.listFiles()
-            .filter { file ->
-                val name = file.name?.lowercase() ?: ""
-                file.isFile && audioExt.any { name.endsWith(it) }
-            }
-            .sortedBy { it.name?.lowercase() }
+        val files = mutableListOf<DocumentFile>()
+        collectAudioFiles(dir, audioExt, files)
 
         if (files.isEmpty()) {
             chapterTitleView.text = "В этой папке нет аудиофайлов"
