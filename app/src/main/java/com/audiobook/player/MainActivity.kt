@@ -2,20 +2,26 @@ package com.audiobook.player
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -46,20 +52,30 @@ class MainActivity : Activity() {
     private lateinit var libraryContainer: LinearLayout
 
     private lateinit var bookTitleView: TextView
-    private lateinit var chapterTitleView: TextView
-    private lateinit var timeView: TextView
+    private lateinit var coverView: ImageView
+    private lateinit var speedBtn: TextView
+    private lateinit var playPauseBtn: TextView
+    private lateinit var timerBtn: TextView
+    private lateinit var chapterBtn: TextView
     private lateinit var seekBar: SeekBar
-    private lateinit var playPauseBtn: Button
+    private lateinit var elapsedTimeView: TextView
+    private lateinit var remainingTimeView: TextView
 
     private lateinit var libraryStatusView: TextView
     private lateinit var libraryListLayout: LinearLayout
 
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
+    private val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+    private var currentSpeedIndex = 0
+
     private val handler = Handler(Looper.getMainLooper())
     private var isSeeking = false
+    private var lastArtworkHash = 0
+    private var sleepTimerEndMs = 0L
 
     private val updateProgressTask = object : Runnable {
         override fun run() {
+            checkSleepTimer()
             updateUI()
             handler.postDelayed(this, 500)
         }
@@ -77,25 +93,27 @@ class MainActivity : Activity() {
         buildUI()
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
     private fun buildUI() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#121212"))
-            setPadding(36, 72, 36, 36)
+            setBackgroundColor(Color.BLACK)
+            setPadding(dp(20), dp(36), dp(20), dp(20))
         }
 
-        // Верхняя панель вкладок
+        // Верхние вкладки
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            setPadding(0, 0, 0, 24)
+            setPadding(0, 0, 0, dp(16))
         }
 
         tabPlayerBtn = Button(this).apply {
             text = "Плеер"
             setOnClickListener { showTab(isLibrary = false) }
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(0, 0, 8, 0)
+                setMargins(0, 0, dp(4), 0)
             }
         }
         tabLibraryBtn = Button(this).apply {
@@ -105,7 +123,7 @@ class MainActivity : Activity() {
                 scanLibrary()
             }
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(8, 0, 0, 0)
+                setMargins(dp(4), 0, 0, 0)
             }
         }
         tabRow.addView(tabPlayerBtn)
@@ -119,26 +137,120 @@ class MainActivity : Activity() {
 
         bookTitleView = TextView(this).apply {
             text = "Книга не выбрана"
-            textSize = 20f
+            textSize = 18f
             setTextColor(Color.WHITE)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(0, 48, 0, 16)
+            setPadding(dp(8), dp(4), dp(8), dp(20))
         }
 
-        chapterTitleView = TextView(this).apply {
-            text = "Откройте «Библиотеку» и выберите папку Books"
+        // Крупная квадратная обложка со скруглением
+        val coverSize = dp(270)
+        coverView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.parseColor("#1A1A1F"))
+            setImageResource(android.R.drawable.ic_media_play)
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(16).toFloat())
+                }
+            }
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(coverSize, coverSize).apply {
+                bottomMargin = dp(28)
+            }
+        }
+
+        // Ряд управления: 1x | -15 | Play | +30 | Таймер
+        val controlsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            weightSum = 5f
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(24)
+            }
+        }
+
+        fun makeTextAction(label: String, sizeSp: Float, onClick: () -> Unit): TextView {
+            return TextView(this).apply {
+                text = label
+                textSize = sizeSp
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(12), dp(4), dp(12))
+                setOnClickListener { onClick() }
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+        }
+
+        speedBtn = makeTextAction("1x", 16f) { cycleSpeed() }
+        val back15Btn = makeTextAction("↺ 15", 17f) {
+            controller?.let {
+                it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
+                saveCurrentProgress()
+            }
+        }
+
+        val playContainer = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f)
+        }
+        playPauseBtn = TextView(this).apply {
+            text = "▶"
+            textSize = 28f
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#E0E0E0"))
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(68), dp(68))
+            setOnClickListener {
+                controller?.let { if (it.isPlaying) it.pause() else it.play() }
+            }
+        }
+        playContainer.addView(playPauseBtn)
+
+        val fwd30Btn = makeTextAction("30 ↻", 17f) {
+            controller?.let {
+                val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
+                it.seekTo(target)
+                saveCurrentProgress()
+            }
+        }
+        timerBtn = makeTextAction("⏱", 20f) { showSleepTimerDialog() }
+
+        controlsRow.addView(speedBtn)
+        controlsRow.addView(back15Btn)
+        controlsRow.addView(playContainer)
+        controlsRow.addView(fwd30Btn)
+        controlsRow.addView(timerBtn)
+
+        // Кнопка списка глав
+        chapterBtn = TextView(this).apply {
+            text = "☰  Выберите книгу в Библиотеке"
             textSize = 15f
-            setTextColor(Color.LTGRAY)
+            setTextColor(Color.parseColor("#D0D0D8"))
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 48)
+            setPadding(dp(12), dp(8), dp(12), dp(16))
+            setOnClickListener { showChaptersDialog() }
         }
 
+        // Полоса перемотки
         seekBar = SeekBar(this).apply {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
                         val dur = controller?.duration?.coerceAtLeast(0) ?: 0L
-                        timeView.text = "${formatTime(progress.toLong())} / ${formatTime(dur)}"
+                        val pos = progress.toLong()
+                        elapsedTimeView.text = formatTime(pos)
+                        remainingTimeView.text = "-${formatTime((dur - pos).coerceAtLeast(0))}"
                     }
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) { isSeeking = true }
@@ -152,67 +264,36 @@ class MainActivity : Activity() {
             })
         }
 
-        timeView = TextView(this).apply {
-            text = "00:00 / 00:00"
-            textSize = 14f
-            setTextColor(Color.GRAY)
-            gravity = Gravity.CENTER
-            setPadding(0, 12, 0, 48)
-        }
-
-        val controlsRow = LinearLayout(this).apply {
+        // Время слева и справа
+        val timeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            weightSum = 5f
+            setPadding(dp(8), dp(4), dp(8), 0)
         }
-
-        fun makeControlButton(label: String, onClick: () -> Unit): Button {
-            return Button(this).apply {
-                text = label
-                textSize = 14f
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(4, 24, 4, 24)
-                setOnClickListener { onClick() }
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(6, 0, 6, 0)
-                }
-            }
+        elapsedTimeView = TextView(this).apply {
+            text = "00:00"
+            textSize = 13f
+            setTextColor(Color.parseColor("#888890"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-
-        val prevBtn = makeControlButton("⏮") { controller?.seekToPreviousMediaItem() }
-        val back15Btn = makeControlButton("-15с") {
-            controller?.let {
-                it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
-                saveCurrentProgress()
-            }
+        remainingTimeView = TextView(this).apply {
+            text = "-00:00"
+            textSize = 13f
+            setTextColor(Color.parseColor("#888890"))
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        playPauseBtn = makeControlButton("▶") {
-            controller?.let { if (it.isPlaying) it.pause() else it.play() }
-        }
-        val fwd30Btn = makeControlButton("+30с") {
-            controller?.let {
-                val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
-                it.seekTo(target)
-                saveCurrentProgress()
-            }
-        }
-        val nextBtn = makeControlButton("⏭") { controller?.seekToNextMediaItem() }
-
-        controlsRow.addView(prevBtn)
-        controlsRow.addView(back15Btn)
-        controlsRow.addView(playPauseBtn)
-        controlsRow.addView(fwd30Btn)
-        controlsRow.addView(nextBtn)
+        timeRow.addView(elapsedTimeView)
+        timeRow.addView(remainingTimeView)
 
         playerContainer.addView(bookTitleView)
-        playerContainer.addView(chapterTitleView)
+        playerContainer.addView(coverView)
+        playerContainer.addView(controlsRow)
+        playerContainer.addView(chapterBtn)
         playerContainer.addView(seekBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        playerContainer.addView(timeView)
-        playerContainer.addView(controlsRow, LinearLayout.LayoutParams(
+        playerContainer.addView(timeRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -238,7 +319,7 @@ class MainActivity : Activity() {
             text = "Папка библиотеки не выбрана"
             textSize = 14f
             setTextColor(Color.LTGRAY)
-            setPadding(4, 16, 4, 16)
+            setPadding(dp(4), dp(12), dp(4), dp(12))
         }
 
         val scrollView = ScrollView(this)
@@ -275,6 +356,69 @@ class MainActivity : Activity() {
 
         setContentView(root)
         showTab(isLibrary = false)
+    }
+
+    private fun cycleSpeed() {
+        currentSpeedIndex = (currentSpeedIndex + 1) % speeds.size
+        val speed = speeds[currentSpeedIndex]
+        controller?.setPlaybackSpeed(speed)
+        speedBtn.text = if (speed % 1f == 0f) "${speed.toInt()}x" else "${speed}x"
+    }
+
+    private fun showSleepTimerDialog() {
+        val options = arrayOf("Выключить", "15 минут", "30 минут", "45 минут", "60 минут")
+        val minutes = intArrayOf(0, 15, 30, 45, 60)
+        AlertDialog.Builder(this)
+            .setTitle("Таймер сна")
+            .setItems(options) { _, which ->
+                val min = minutes[which]
+                sleepTimerEndMs = if (min == 0) 0L else System.currentTimeMillis() + min * 60_000L
+                updateTimerButton()
+            }
+            .show()
+    }
+
+    private fun checkSleepTimer() {
+        if (sleepTimerEndMs > 0L) {
+            if (System.currentTimeMillis() >= sleepTimerEndMs) {
+                sleepTimerEndMs = 0L
+                controller?.pause()
+                saveCurrentProgress()
+            }
+            updateTimerButton()
+        }
+    }
+
+    private fun updateTimerButton() {
+        if (sleepTimerEndMs <= 0L) {
+            timerBtn.text = "⏱"
+            timerBtn.setTextColor(Color.WHITE)
+        } else {
+            val leftMin = ((sleepTimerEndMs - System.currentTimeMillis()) / 60_000L) + 1
+            timerBtn.text = "${leftMin}м"
+            timerBtn.setTextColor(Color.parseColor("#80D8FF"))
+        }
+    }
+
+    private fun showChaptersDialog() {
+        val player = controller ?: return
+        val count = player.mediaItemCount
+        if (count == 0) return
+
+        val titles = Array(count) { i ->
+            val title = player.getMediaItemAt(i).mediaMetadata.title?.toString() ?: "Глава ${i + 1}"
+            if (i == player.currentMediaItemIndex) "▶ $title" else title
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Главы ($count)")
+            .setItems(titles) { _, which ->
+                player.seekTo(which, 0L)
+                player.play()
+                saveCurrentProgress()
+                updateUI()
+            }
+            .show()
     }
 
     private fun showTab(isLibrary: Boolean) {
@@ -325,218 +469,4 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val libUriStr = prefs.getString("library_uri", null)
         if (libUriStr == null) {
-            libraryStatusView.text = "Нажмите кнопку выше и выберите папку Books"
-            return
-        }
-
-        libraryStatusView.text = "Сканирую библиотеку..."
-        libraryListLayout.removeAllViews()
-
-        Thread {
-            val rootDir = DocumentFile.fromTreeUri(this, Uri.parse(libUriStr))
-            val books = mutableListOf<BookEntry>()
-            if (rootDir != null) {
-                findBooks(rootDir, "", books)
-            }
-            books.sortBy { it.title.lowercase() }
-
-            runOnUiThread {
-                if (books.isEmpty()) {
-                    libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
-                } else {
-                    libraryStatusView.text = "Найдено книг: ${books.size}"
-                    val activeUri = prefs.getString("folder_uri", null)
-                    for (book in books) {
-                        libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
-                    }
-                }
-            }
-        }.start()
-    }
-
-    private fun findBooks(dir: DocumentFile, parentPath: String, out: MutableList<BookEntry>) {
-        val entries = dir.listFiles()
-        val hasAudioHere = entries.any { file ->
-            val name = file.name?.lowercase() ?: ""
-            file.isFile && audioExt.any { name.endsWith(it) }
-        }
-
-        val currentName = dir.name ?: "Книга"
-        if (hasAudioHere) {
-            out.add(BookEntry(currentName, parentPath, dir.uri.toString()))
-        }
-
-        val nextPath = if (parentPath.isEmpty()) currentName else "$parentPath / $currentName"
-        for (entry in entries) {
-            if (entry.isDirectory) {
-                findBooks(entry, nextPath, out)
-            }
-        }
-    }
-
-    private fun createBookCard(book: BookEntry, isActive: Boolean): View {
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
-        val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
-
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(28, 24, 28, 24)
-            background = GradientDrawable().apply {
-                cornerRadius = 24f
-                setColor(Color.parseColor(if (isActive) "#2B3A4A" else "#1E1E24"))
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 16)
-            }
-            setOnClickListener {
-                switchToBook(book.uriString)
-            }
-        }
-
-        val titleTv = TextView(this).apply {
-            text = if (isActive) "▶ ${book.title}" else book.title
-            textSize = 16f
-            setTextColor(Color.WHITE)
-        }
-
-        val progressText = if (savedIdx >= 0) {
-            "Глава ${savedIdx + 1} • ${formatTime(savedPos)}"
-        } else {
-            "Не начата"
-        }
-
-        val subTv = TextView(this).apply {
-            text = if (book.subtitle.isNotEmpty()) "${book.subtitle}  |  $progressText" else progressText
-            textSize = 12f
-            setTextColor(Color.parseColor("#A0A0B0"))
-            setPadding(0, 6, 0, 0)
-        }
-
-        card.addView(titleTv)
-        card.addView(subTv)
-        return card
-    }
-
-    private fun switchToBook(bookUriStr: String) {
-        saveCurrentProgress()
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val savedIndex = prefs.getInt("idx_$bookUriStr", 0)
-        val savedPos = prefs.getLong("pos_$bookUriStr", 0L)
-
-        prefs.edit()
-            .putString("folder_uri", bookUriStr)
-            .putInt("last_index", savedIndex)
-            .putLong("last_pos", savedPos)
-            .apply()
-
-        showTab(isLibrary = false)
-        loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true)
-    }
-
-    private fun saveCurrentProgress() {
-        val player = controller ?: return
-        if (player.mediaItemCount == 0) return
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val currentUri = prefs.getString("folder_uri", null) ?: return
-        prefs.edit()
-            .putInt("last_index", player.currentMediaItemIndex)
-            .putLong("last_pos", player.currentPosition)
-            .putInt("idx_$currentUri", player.currentMediaItemIndex)
-            .putLong("pos_$currentUri", player.currentPosition)
-            .apply()
-    }
-
-    private fun restoreSavedBookIfEmpty() {
-        val player = controller ?: return
-        if (player.mediaItemCount > 0) return
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val uriStr = prefs.getString("folder_uri", null) ?: return
-        val index = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
-        val pos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
-        loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false)
-    }
-
-    private fun collectAudioFiles(dir: DocumentFile, out: MutableList<DocumentFile>) {
-        val entries = dir.listFiles().sortedBy { it.name?.lowercase() }
-        for (entry in entries) {
-            if (entry.isDirectory) {
-                collectAudioFiles(entry, out)
-            } else if (entry.isFile) {
-                val name = entry.name?.lowercase() ?: ""
-                if (audioExt.any { name.endsWith(it) }) {
-                    out.add(entry)
-                }
-            }
-        }
-    }
-
-    private fun loadFolder(treeUri: Uri, startIndex: Int, startPos: Long, autoPlay: Boolean) {
-        chapterTitleView.text = "Загружаю главы..."
-        Thread {
-            val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
-            val bookName = dir.name ?: "Аудиокнига"
-            val files = mutableListOf<DocumentFile>()
-            collectAudioFiles(dir, files)
-
-            runOnUiThread {
-                bookTitleView.text = bookName
-                if (files.isEmpty()) {
-                    chapterTitleView.text = "В этой папке нет аудиофайлов"
-                    return@runOnUiThread
-                }
-
-                val items = files.map { file ->
-                    val title = file.name?.substringBeforeLast('.') ?: "Глава"
-                    MediaItem.Builder()
-                        .setUri(file.uri)
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(title)
-                                .setArtist(bookName)
-                                .build()
-                        )
-                        .build()
-                }
-
-                val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-                controller?.apply {
-                    setMediaItems(items, safeIndex, startPos)
-                    prepare()
-                    if (autoPlay) play()
-                }
-                updateUI()
-            }
-        }.start()
-    }
-
-    private fun updateUI() {
-        val player = controller ?: return
-        val meta = player.currentMediaItem?.mediaMetadata
-        if (meta != null) {
-            bookTitleView.text = meta.artist ?: "Аудиокнига"
-            chapterTitleView.text = meta.title ?: "Глава"
-        }
-        playPauseBtn.text = if (player.isPlaying) "⏸" else "▶"
-
-        val dur = player.duration.coerceAtLeast(0)
-        val pos = player.currentPosition.coerceAtLeast(0)
-        if (!isSeeking) {
-            seekBar.max = dur.toInt()
-            seekBar.progress = pos.toInt()
-            timeView.text = "${formatTime(pos)} / ${formatTime(dur)}"
-        }
-    }
-
-    private fun formatTime(ms: Long): String {
-        val totalSec = ms / 1000
-        val h = totalSec / 3600
-        val m = (totalSec % 3600) / 60
-        val s = totalSec % 60
-        return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
-        else String.format("%02d:%02d", m, s)
-    }
-}
+            libraryStatusView.text
