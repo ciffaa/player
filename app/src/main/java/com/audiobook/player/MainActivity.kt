@@ -7,9 +7,12 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.PorterDuff
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -41,28 +44,108 @@ data class BookEntry(
     val uriString: String
 )
 
+data class AppTheme(
+    val id: String,
+    val name: String,
+    val bg: Int,
+    val surface: Int,
+    val activeCard: Int,
+    val textPrimary: Int,
+    val textSecondary: Int,
+    val accentBg: Int,
+    val accentText: Int,
+    val navBg: Int,
+    val navActive: Int,
+    val navInactive: Int,
+    val timerActive: Int
+)
+
 class MainActivity : Activity() {
+
+    private val themes = listOf(
+        AppTheme(
+            id = "dark",
+            name = "Тёмная",
+            bg = Color.parseColor("#000000"),
+            surface = Color.parseColor("#16161A"),
+            activeCard = Color.parseColor("#263238"),
+            textPrimary = Color.parseColor("#FFFFFF"),
+            textSecondary = Color.parseColor("#9090A0"),
+            accentBg = Color.parseColor("#E0E0E0"),
+            accentText = Color.parseColor("#000000"),
+            navBg = Color.parseColor("#121216"),
+            navActive = Color.parseColor("#FFFFFF"),
+            navInactive = Color.parseColor("#6E6E7A"),
+            timerActive = Color.parseColor("#80D8FF")
+        ),
+        AppTheme(
+            id = "light",
+            name = "Светлая",
+            bg = Color.parseColor("#F4F5F7"),
+            surface = Color.parseColor("#FFFFFF"),
+            activeCard = Color.parseColor("#E3F2FD"),
+            textPrimary = Color.parseColor("#121216"),
+            textSecondary = Color.parseColor("#666672"),
+            accentBg = Color.parseColor("#1A1A20"),
+            accentText = Color.parseColor("#FFFFFF"),
+            navBg = Color.parseColor("#FFFFFF"),
+            navActive = Color.parseColor("#121216"),
+            navInactive = Color.parseColor("#8E8E98"),
+            timerActive = Color.parseColor("#0277BD")
+        ),
+        AppTheme(
+            id = "dark_green",
+            name = "Тёмно-зелёная",
+            bg = Color.parseColor("#0B1410"),
+            surface = Color.parseColor("#13221B"),
+            activeCard = Color.parseColor("#1E3A2C"),
+            textPrimary = Color.parseColor("#E8F5E9"),
+            textSecondary = Color.parseColor("#81A692"),
+            accentBg = Color.parseColor("#66BB6A"),
+            accentText = Color.parseColor("#0B1410"),
+            navBg = Color.parseColor("#101D17"),
+            navActive = Color.parseColor("#66BB6A"),
+            navInactive = Color.parseColor("#5B7A69"),
+            timerActive = Color.parseColor("#A5D6A7")
+        )
+    )
+
+    private var currentTheme: AppTheme = themes[0]
+    private var currentTab = 0 // 0 - Плеер, 1 - Библиотека, 2 - Настройки
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
 
-    private lateinit var tabPlayerBtn: Button
-    private lateinit var tabLibraryBtn: Button
+    private lateinit var rootLayout: LinearLayout
+    private lateinit var contentContainer: LinearLayout
+    private lateinit var bottomNavBar: LinearLayout
+    private lateinit var navPlayerIcon: ImageView
+    private lateinit var navLibraryIcon: ImageView
+    private lateinit var navSettingsIcon: ImageView
+
     private lateinit var playerContainer: LinearLayout
     private lateinit var libraryContainer: LinearLayout
+    private lateinit var settingsContainer: LinearLayout
 
     private lateinit var bookTitleView: TextView
     private lateinit var coverView: ImageView
     private lateinit var speedBtn: TextView
+    private lateinit var back15Btn: TextView
     private lateinit var playPauseBtn: TextView
+    private lateinit var fwd30Btn: TextView
     private lateinit var timerBtn: TextView
     private lateinit var chapterBtn: TextView
     private lateinit var seekBar: SeekBar
     private lateinit var elapsedTimeView: TextView
     private lateinit var remainingTimeView: TextView
 
+    private lateinit var pickLibraryBtn: Button
     private lateinit var libraryStatusView: TextView
     private lateinit var libraryListLayout: LinearLayout
+
+    private lateinit var settingsTitleView: TextView
+    private lateinit var themeSectionLabel: TextView
+    private lateinit var themeButtonsContainer: LinearLayout
 
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
     private val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
@@ -90,66 +173,55 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
         }
 
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val savedThemeId = prefs.getString("app_theme", "dark")
+        currentTheme = themes.find { it.id == savedThemeId } ?: themes[0]
+
         buildUI()
+        applyTheme()
+        showTab(0)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun buildUI() {
-        val root = LinearLayout(this).apply {
+        rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.BLACK)
-            setPadding(dp(20), dp(36), dp(20), dp(20))
         }
 
-        // Верхние вкладки
-        val tabRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            weightSum = 2f
-            setPadding(0, 0, 0, dp(16))
+        contentContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(36), dp(20), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
         }
 
-        tabPlayerBtn = Button(this).apply {
-            text = "Плеер"
-            setOnClickListener { showTab(isLibrary = false) }
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(0, 0, dp(4), 0)
-            }
-        }
-        tabLibraryBtn = Button(this).apply {
-            text = "Библиотека"
-            setOnClickListener {
-                showTab(isLibrary = true)
-                scanLibrary()
-            }
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(dp(4), 0, 0, 0)
-            }
-        }
-        tabRow.addView(tabPlayerBtn)
-        tabRow.addView(tabLibraryBtn)
-
-        // --- ЭКРАН ПЛЕЕРА ---
+        // --- 1. ЭКРАН ПЛЕЕРА ---
         playerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
         }
 
         bookTitleView = TextView(this).apply {
             text = "Книга не выбрана"
             textSize = 18f
-            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(4), dp(8), dp(20))
+            setPadding(dp(8), dp(8), dp(8), dp(24))
         }
 
-        // Крупная квадратная обложка со скруглением
         val coverSize = dp(270)
         coverView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            setBackgroundColor(Color.parseColor("#1A1A1F"))
             setImageResource(android.R.drawable.ic_media_play)
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
@@ -162,7 +234,6 @@ class MainActivity : Activity() {
             }
         }
 
-        // Ряд управления: 1x | -15 | Play | +30 | Таймер
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -179,7 +250,6 @@ class MainActivity : Activity() {
             return TextView(this).apply {
                 text = label
                 textSize = sizeSp
-                setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setPadding(dp(4), dp(12), dp(4), dp(12))
                 setOnClickListener { onClick() }
@@ -188,7 +258,7 @@ class MainActivity : Activity() {
         }
 
         speedBtn = makeTextAction("1x", 16f) { cycleSpeed() }
-        val back15Btn = makeTextAction("↺ 15", 17f) {
+        back15Btn = makeTextAction("↺ 15", 17f) {
             controller?.let {
                 it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
                 saveCurrentProgress()
@@ -202,12 +272,7 @@ class MainActivity : Activity() {
         playPauseBtn = TextView(this).apply {
             text = "▶"
             textSize = 28f
-            setTextColor(Color.BLACK)
             gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#E0E0E0"))
-            }
             layoutParams = LinearLayout.LayoutParams(dp(68), dp(68))
             setOnClickListener {
                 controller?.let { if (it.isPlaying) it.pause() else it.play() }
@@ -215,7 +280,7 @@ class MainActivity : Activity() {
         }
         playContainer.addView(playPauseBtn)
 
-        val fwd30Btn = makeTextAction("30 ↻", 17f) {
+        fwd30Btn = makeTextAction("30 ↻", 17f) {
             controller?.let {
                 val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
                 it.seekTo(target)
@@ -230,11 +295,9 @@ class MainActivity : Activity() {
         controlsRow.addView(fwd30Btn)
         controlsRow.addView(timerBtn)
 
-        // Кнопка списка глав
         chapterBtn = TextView(this).apply {
             text = "☰  Выберите книгу в Библиотеке"
             textSize = 15f
-            setTextColor(Color.parseColor("#D0D0D8"))
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
@@ -242,7 +305,6 @@ class MainActivity : Activity() {
             setOnClickListener { showChaptersDialog() }
         }
 
-        // Полоса перемотки
         seekBar = SeekBar(this).apply {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -264,7 +326,6 @@ class MainActivity : Activity() {
             })
         }
 
-        // Время слева и справа
         val timeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(4), dp(8), 0)
@@ -272,13 +333,11 @@ class MainActivity : Activity() {
         elapsedTimeView = TextView(this).apply {
             text = "00:00"
             textSize = 13f
-            setTextColor(Color.parseColor("#888890"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         remainingTimeView = TextView(this).apply {
             text = "-00:00"
             textSize = 13f
-            setTextColor(Color.parseColor("#888890"))
             gravity = Gravity.END
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -298,13 +357,17 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        // --- ЭКРАН БИБЛИОТЕКИ ---
+        // --- 2. ЭКРАН БИБЛИОТЕКИ ---
         libraryContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
         }
 
-        val pickLibraryBtn = Button(this).apply {
+        pickLibraryBtn = Button(this).apply {
             text = "Выбрать общую папку Books"
             setOnClickListener {
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
@@ -318,7 +381,6 @@ class MainActivity : Activity() {
         libraryStatusView = TextView(this).apply {
             text = "Папка библиотеки не выбрана"
             textSize = 14f
-            setTextColor(Color.LTGRAY)
             setPadding(dp(4), dp(12), dp(4), dp(12))
         }
 
@@ -339,23 +401,199 @@ class MainActivity : Activity() {
             1f
         ))
 
-        root.addView(tabRow, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        root.addView(playerContainer, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
-        root.addView(libraryContainer, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        // --- 3. ЭКРАН НАСТРОЕК ---
+        settingsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
 
-        setContentView(root)
-        showTab(isLibrary = false)
+        settingsTitleView = TextView(this).apply {
+            text = "Настройки"
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), dp(8), dp(4), dp(24))
+        }
+
+        themeSectionLabel = TextView(this).apply {
+            text = "Тема оформления"
+            textSize = 14f
+            setPadding(dp(4), 0, dp(4), dp(12))
+        }
+
+        themeButtonsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        settingsContainer.addView(settingsTitleView)
+        settingsContainer.addView(themeSectionLabel)
+        settingsContainer.addView(themeButtonsContainer)
+
+        contentContainer.addView(playerContainer)
+        contentContainer.addView(libraryContainer)
+        contentContainer.addView(settingsContainer)
+
+        // --- НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ (МИНИМАЛИСТИЧНЫЕ ИКОНКИ) ---
+        bottomNavBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            weightSum = 3f
+            setPadding(dp(12), dp(12), dp(12), dp(16))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        fun makeNavIcon(resId: Int, tabIndex: Int): Pair<LinearLayout, ImageView> {
+            val icon = ImageView(this).apply {
+                setImageResource(resId)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(dp(26), dp(26))
+            }
+            val wrapper = LinearLayout(this).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(8))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { showTab(tabIndex) }
+                addView(icon)
+            }
+            return Pair(wrapper, icon)
+        }
+
+        val (libWrap, libIcon) = makeNavIcon(R.drawable.ic_nav_library, 1)
+        val (playerWrap, playerIcon) = makeNavIcon(R.drawable.ic_nav_player, 0)
+        val (settingsWrap, settingsIcon) = makeNavIcon(R.drawable.ic_nav_settings, 2)
+
+        navLibraryIcon = libIcon
+        navPlayerIcon = playerIcon
+        navSettingsIcon = settingsIcon
+
+        bottomNavBar.addView(libWrap)
+        bottomNavBar.addView(playerWrap)
+        bottomNavBar.addView(settingsWrap)
+
+        rootLayout.addView(contentContainer)
+        rootLayout.addView(bottomNavBar)
+
+        setContentView(rootLayout)
+    }
+
+    private fun applyTheme() {
+        val t = currentTheme
+        rootLayout.setBackgroundColor(t.bg)
+        window.statusBarColor = t.bg
+        window.navigationBarColor = t.navBg
+
+        // Плеер
+        bookTitleView.setTextColor(t.textPrimary)
+        coverView.setBackgroundColor(t.surface)
+        speedBtn.setTextColor(t.textPrimary)
+        back15Btn.setTextColor(t.textPrimary)
+        fwd30Btn.setTextColor(t.textPrimary)
+        playPauseBtn.setTextColor(t.accentText)
+        playPauseBtn.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(t.accentBg)
+        }
+        chapterBtn.setTextColor(t.textPrimary)
+        elapsedTimeView.setTextColor(t.textSecondary)
+        remainingTimeView.setTextColor(t.textSecondary)
+        seekBar.progressTintList = ColorStateList.valueOf(t.accentBg)
+        seekBar.thumbTintList = ColorStateList.valueOf(t.accentBg)
+        updateTimerButton()
+
+        // Библиотека
+        libraryStatusView.setTextColor(t.textSecondary)
+
+        // Настройки
+        settingsTitleView.setTextColor(t.textPrimary)
+        themeSectionLabel.setTextColor(t.textSecondary)
+        rebuildThemeButtons()
+
+        // Нижняя панель
+        bottomNavBar.setBackgroundColor(t.navBg)
+        updateNavColors()
+    }
+
+    private fun rebuildThemeButtons() {
+        themeButtonsContainer.removeAllViews()
+        val t = currentTheme
+        for (themeOption in themes) {
+            val isSelected = themeOption.id == t.id
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(18), dp(16), dp(18), dp(16))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(14).toFloat()
+                    setColor(if (isSelected) t.activeCard else t.surface)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(10)
+                }
+                setOnClickListener {
+                    currentTheme = themeOption
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("app_theme", themeOption.id)
+                        .apply()
+                    applyTheme()
+                }
+            }
+
+            val previewDot = View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(themeOption.accentBg)
+                    setStroke(dp(2), themeOption.bg)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
+                    marginEnd = dp(14)
+                }
+            }
+
+            val label = TextView(this).apply {
+                text = themeOption.name
+                textSize = 16f
+                setTextColor(t.textPrimary)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            val check = TextView(this).apply {
+                text = if (isSelected) "✓" else ""
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(t.navActive)
+            }
+
+            card.addView(previewDot)
+            card.addView(label)
+            card.addView(check)
+            themeButtonsContainer.addView(card)
+        }
+    }
+
+    private fun updateNavColors() {
+        val t = currentTheme
+        navPlayerIcon.setColorFilter(if (currentTab == 0) t.navActive else t.navInactive, PorterDuff.Mode.SRC_IN)
+        navLibraryIcon.setColorFilter(if (currentTab == 1) t.navActive else t.navInactive, PorterDuff.Mode.SRC_IN)
+        navSettingsIcon.setColorFilter(if (currentTab == 2) t.navActive else t.navInactive, PorterDuff.Mode.SRC_IN)
+    }
+
+    private fun showTab(tabIndex: Int) {
+        currentTab = tabIndex
+        playerContainer.visibility = if (tabIndex == 0) View.VISIBLE else View.GONE
+        libraryContainer.visibility = if (tabIndex == 1) View.VISIBLE else View.GONE
+        settingsContainer.visibility = if (tabIndex == 2) View.VISIBLE else View.GONE
+        updateNavColors()
+        if (tabIndex == 1) scanLibrary()
     }
 
     private fun cycleSpeed() {
@@ -392,11 +630,11 @@ class MainActivity : Activity() {
     private fun updateTimerButton() {
         if (sleepTimerEndMs <= 0L) {
             timerBtn.text = "⏱"
-            timerBtn.setTextColor(Color.WHITE)
+            timerBtn.setTextColor(currentTheme.textPrimary)
         } else {
             val leftMin = ((sleepTimerEndMs - System.currentTimeMillis()) / 60_000L) + 1
             timerBtn.text = "${leftMin}м"
-            timerBtn.setTextColor(Color.parseColor("#80D8FF"))
+            timerBtn.setTextColor(currentTheme.timerActive)
         }
     }
 
@@ -419,13 +657,6 @@ class MainActivity : Activity() {
                 updateUI()
             }
             .show()
-    }
-
-    private fun showTab(isLibrary: Boolean) {
-        playerContainer.visibility = if (isLibrary) View.GONE else View.VISIBLE
-        libraryContainer.visibility = if (isLibrary) View.VISIBLE else View.GONE
-        tabPlayerBtn.alpha = if (isLibrary) 0.5f else 1f
-        tabLibraryBtn.alpha = if (isLibrary) 1f else 0.5f
     }
 
     override fun onStart() {
@@ -522,13 +753,14 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
         val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
+        val t = currentTheme
 
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
             background = GradientDrawable().apply {
                 cornerRadius = dp(14).toFloat()
-                setColor(Color.parseColor(if (isActive) "#263238" else "#16161A"))
+                setColor(if (isActive) t.activeCard else t.surface)
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -544,7 +776,7 @@ class MainActivity : Activity() {
         val titleTv = TextView(this).apply {
             text = if (isActive) "▶ ${book.title}" else book.title
             textSize = 16f
-            setTextColor(Color.WHITE)
+            setTextColor(t.textPrimary)
         }
 
         val progressText = if (savedIdx >= 0) {
@@ -556,7 +788,7 @@ class MainActivity : Activity() {
         val subTv = TextView(this).apply {
             text = if (book.subtitle.isNotEmpty()) "${book.subtitle}  |  $progressText" else progressText
             textSize = 12f
-            setTextColor(Color.parseColor("#9090A0"))
+            setTextColor(t.textSecondary)
             setPadding(0, dp(4), 0, 0)
         }
 
@@ -577,7 +809,7 @@ class MainActivity : Activity() {
             .putLong("last_pos", savedPos)
             .apply()
 
-        showTab(isLibrary = false)
+        showTab(0)
         loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true)
     }
 
