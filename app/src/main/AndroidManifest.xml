@@ -27,5 +27,29 @@
             </intent-filter>
         </service>
 
+        <receiver
+            android:name=".GridWidgetProvider"
+            android:label="Плеер 2×2"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_grid_info" />
+        </receiver>
+
+        <receiver
+            android:name=".BarWidgetProvider"
+            android:label="Плеер компактный"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_bar_info" />
+        </receiver>
+
     </application>
 </manifest>
