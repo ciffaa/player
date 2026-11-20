@@ -216,10 +216,20 @@ class MainActivity : Activity() {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(8), dp(8), dp(24))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
 
-        val coverSize = dp(270)
+        // Гибкий контейнер для обложки — центрирует её и сдвигает управление вниз
+        val coverWrapper = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        }
+
+        val coverSize = dp(280)
         coverView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setImageResource(android.R.drawable.ic_media_play)
@@ -229,10 +239,9 @@ class MainActivity : Activity() {
                 }
             }
             clipToOutline = true
-            layoutParams = LinearLayout.LayoutParams(coverSize, coverSize).apply {
-                bottomMargin = dp(28)
-            }
+            layoutParams = LinearLayout.LayoutParams(coverSize, coverSize)
         }
+        coverWrapper.addView(coverView)
 
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -242,7 +251,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(24)
+                bottomMargin = dp(20)
             }
         }
 
@@ -301,7 +310,7 @@ class MainActivity : Activity() {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(16))
+            setPadding(dp(12), dp(6), dp(12), dp(14))
             setOnClickListener { showChaptersDialog() }
         }
 
@@ -328,7 +337,7 @@ class MainActivity : Activity() {
 
         val timeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(4), dp(8), 0)
+            setPadding(dp(8), dp(4), dp(8), dp(12))
         }
         elapsedTimeView = TextView(this).apply {
             text = "00:00"
@@ -345,7 +354,7 @@ class MainActivity : Activity() {
         timeRow.addView(remainingTimeView)
 
         playerContainer.addView(bookTitleView)
-        playerContainer.addView(coverView)
+        playerContainer.addView(coverWrapper)
         playerContainer.addView(controlsRow)
         playerContainer.addView(chapterBtn)
         playerContainer.addView(seekBar, LinearLayout.LayoutParams(
