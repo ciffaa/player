@@ -6,8 +6,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:allowBackup="true"
+        android:icon="@drawable/cat_logo"
+        android:roundIcon="@drawable/cat_logo"
         android:label="Аудиокниги"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:supportsRtl="true">
 
         <activity
             android:name=".MainActivity"
@@ -29,7 +32,6 @@
 
         <receiver
             android:name=".GridWidgetProvider"
-            android:label="Плеер 2×2"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -41,7 +43,6 @@
 
         <receiver
             android:name=".BarWidgetProvider"
-            android:label="Плеер компактный"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -52,4 +53,5 @@
         </receiver>
 
     </application>
+
 </manifest>
