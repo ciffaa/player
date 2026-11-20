@@ -60,6 +60,12 @@ data class AppTheme(
     val timerActive: Int
 )
 
+data class BadgeOption(
+    val id: String,
+    val name: String,
+    val drawableRes: Int
+)
+
 class MainActivity : Activity() {
 
     private val themes = listOf(
@@ -110,7 +116,14 @@ class MainActivity : Activity() {
         )
     )
 
+    private val badges = listOf(
+        BadgeOption("blep", "Кот с язычком", R.drawable.cat_logo),
+        BadgeOption("grumpy", "Кот угрюмый", R.drawable.cat_grumpy),
+        BadgeOption("curious", "Кот любопытный", R.drawable.cat_curious)
+    )
+
     private var currentTheme: AppTheme = themes[0]
+    private var currentBadge: BadgeOption = badges[0]
     private var currentTab = 0 // 0 - Плеер, 1 - Библиотека, 2 - Настройки
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -128,6 +141,7 @@ class MainActivity : Activity() {
     private lateinit var settingsContainer: LinearLayout
 
     private lateinit var bookTitleView: TextView
+    private lateinit var badgePreviewView: ImageView
     private lateinit var coverView: ImageView
     private lateinit var speedBtn: TextView
     private lateinit var back15Btn: TextView
@@ -146,6 +160,8 @@ class MainActivity : Activity() {
     private lateinit var settingsTitleView: TextView
     private lateinit var themeSectionLabel: TextView
     private lateinit var themeButtonsContainer: LinearLayout
+    private lateinit var badgeSectionLabel: TextView
+    private lateinit var badgeButtonsContainer: LinearLayout
 
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
     private val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
@@ -177,8 +193,12 @@ class MainActivity : Activity() {
         val savedThemeId = prefs.getString("app_theme", "dark")
         currentTheme = themes.find { it.id == savedThemeId } ?: themes[0]
 
+        val savedBadgeId = prefs.getString("app_badge", "blep")
+        currentBadge = badges.find { it.id == savedBadgeId } ?: badges[0]
+
         buildUI()
         applyTheme()
+        applyBadge()
         showTab(0)
     }
 
@@ -209,6 +229,30 @@ class MainActivity : Activity() {
             )
         }
 
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        badgePreviewView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setOval(0, 0, view.width, view.height)
+                }
+            }
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                marginEnd = dp(10)
+            }
+            setOnClickListener { showTab(2) }
+        }
+
         bookTitleView = TextView(this).apply {
             text = "Книга не выбрана"
             textSize = 18f
@@ -216,10 +260,19 @@ class MainActivity : Activity() {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        // Гибкий контейнер для обложки — центрирует её и сдвигает управление вниз
+        val spacerRight = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                marginStart = dp(10)
+            }
+        }
+
+        headerRow.addView(badgePreviewView)
+        headerRow.addView(bookTitleView)
+        headerRow.addView(spacerRight)
+
         val coverWrapper = LinearLayout(this).apply {
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
@@ -353,7 +406,7 @@ class MainActivity : Activity() {
         timeRow.addView(elapsedTimeView)
         timeRow.addView(remainingTimeView)
 
-        playerContainer.addView(bookTitleView)
+        playerContainer.addView(headerRow)
         playerContainer.addView(coverWrapper)
         playerContainer.addView(controlsRow)
         playerContainer.addView(chapterBtn)
@@ -424,22 +477,34 @@ class MainActivity : Activity() {
             text = "Настройки"
             textSize = 22f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(4), dp(8), dp(4), dp(24))
+            setPadding(dp(4), dp(8), dp(4), dp(20))
         }
 
         themeSectionLabel = TextView(this).apply {
             text = "Тема оформления"
             textSize = 14f
-            setPadding(dp(4), 0, dp(4), dp(12))
+            setPadding(dp(4), 0, dp(4), dp(10))
         }
 
         themeButtonsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
+        badgeSectionLabel = TextView(this).apply {
+            text = "Значок плеера"
+            textSize = 14f
+            setPadding(dp(4), dp(16), dp(4), dp(10))
+        }
+
+        badgeButtonsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
         settingsContainer.addView(settingsTitleView)
         settingsContainer.addView(themeSectionLabel)
         settingsContainer.addView(themeButtonsContainer)
+        settingsContainer.addView(badgeSectionLabel)
+        settingsContainer.addView(badgeButtonsContainer)
 
         contentContainer.addView(playerContainer)
         contentContainer.addView(libraryContainer)
@@ -491,6 +556,10 @@ class MainActivity : Activity() {
         setContentView(rootLayout)
     }
 
+    private fun applyBadge() {
+        badgePreviewView.setImageResource(currentBadge.drawableRes)
+    }
+
     private fun applyTheme() {
         val t = currentTheme
         rootLayout.setBackgroundColor(t.bg)
@@ -521,7 +590,9 @@ class MainActivity : Activity() {
         // Настройки
         settingsTitleView.setTextColor(t.textPrimary)
         themeSectionLabel.setTextColor(t.textSecondary)
+        badgeSectionLabel.setTextColor(t.textSecondary)
         rebuildThemeButtons()
+        rebuildBadgeButtons()
 
         // Нижняя панель
         bottomNavBar.setBackgroundColor(t.navBg)
@@ -536,7 +607,7 @@ class MainActivity : Activity() {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(18), dp(16), dp(18), dp(16))
+                setPadding(dp(18), dp(14), dp(18), dp(14))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(14).toFloat()
                     setColor(if (isSelected) t.activeCard else t.surface)
@@ -545,7 +616,7 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = dp(10)
+                    bottomMargin = dp(8)
                 }
                 setOnClickListener {
                     currentTheme = themeOption
@@ -586,6 +657,71 @@ class MainActivity : Activity() {
             card.addView(label)
             card.addView(check)
             themeButtonsContainer.addView(card)
+        }
+    }
+
+    private fun rebuildBadgeButtons() {
+        badgeButtonsContainer.removeAllViews()
+        val t = currentTheme
+        for (option in badges) {
+            val isSelected = option.id == currentBadge.id
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(14).toFloat()
+                    setColor(if (isSelected) t.activeCard else t.surface)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(8)
+                }
+                setOnClickListener {
+                    currentBadge = option
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("app_badge", option.id)
+                        .apply()
+                    applyBadge()
+                    rebuildBadgeButtons()
+                }
+            }
+
+            val thumb = ImageView(this).apply {
+                setImageResource(option.drawableRes)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: Outline) {
+                        outline.setOval(0, 0, view.width, view.height)
+                    }
+                }
+                clipToOutline = true
+                layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                    marginEnd = dp(14)
+                }
+            }
+
+            val label = TextView(this).apply {
+                text = option.name
+                textSize = 16f
+                setTextColor(t.textPrimary)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            val check = TextView(this).apply {
+                text = if (isSelected) "✓" else ""
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(t.navActive)
+            }
+
+            card.addView(thumb)
+            card.addView(label)
+            card.addView(check)
+            badgeButtonsContainer.addView(card)
         }
     }
 
