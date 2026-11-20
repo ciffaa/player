@@ -23,17 +23,17 @@
             android:scaleType="centerCrop"
             android:src="@android:drawable/ic_media_play" />
 
-        <TextView
+        <ImageView
             android:id="@+id/widget_play_pause"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:layout_marginStart="5dp"
             android:background="@drawable/widget_tile_bg"
-            android:gravity="center"
-            android:text="▶"
-            android:textColor="#FFFFFF"
-            android:textSize="30sp" />
+            android:padding="14dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_play"
+            android:tint="#FFFFFF" />
     </LinearLayout>
 
     <LinearLayout
