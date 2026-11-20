@@ -131,7 +131,7 @@ class MainActivity : Activity() {
     private lateinit var coverView: ImageView
     private lateinit var speedBtn: TextView
     private lateinit var back15Btn: TextView
-    private lateinit var playPauseBtn: TextView
+    private lateinit var playPauseBtn: ImageView
     private lateinit var fwd30Btn: TextView
     private lateinit var timerBtn: TextView
     private lateinit var chapterBtn: TextView
@@ -269,10 +269,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f)
         }
-        playPauseBtn = TextView(this).apply {
-            text = "▶"
-            textSize = 28f
-            gravity = Gravity.CENTER
+        playPauseBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_play)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(18), dp(18), dp(18), dp(18))
             layoutParams = LinearLayout.LayoutParams(dp(68), dp(68))
             setOnClickListener {
                 controller?.let { if (it.isPlaying) it.pause() else it.play() }
@@ -436,7 +436,7 @@ class MainActivity : Activity() {
         contentContainer.addView(libraryContainer)
         contentContainer.addView(settingsContainer)
 
-        // --- НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ (МИНИМАЛИСТИЧНЫЕ ИКОНКИ) ---
+        // --- НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ ---
         bottomNavBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -494,7 +494,7 @@ class MainActivity : Activity() {
         speedBtn.setTextColor(t.textPrimary)
         back15Btn.setTextColor(t.textPrimary)
         fwd30Btn.setTextColor(t.textPrimary)
-        playPauseBtn.setTextColor(t.accentText)
+        playPauseBtn.setColorFilter(t.accentText, PorterDuff.Mode.SRC_IN)
         playPauseBtn.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(t.accentBg)
@@ -910,7 +910,7 @@ class MainActivity : Activity() {
             }
         }
 
-        playPauseBtn.text = if (player.isPlaying) "⏸" else "▶"
+        playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
 
         val dur = player.duration.coerceAtLeast(0)
         val pos = player.currentPosition.coerceAtLeast(0)
