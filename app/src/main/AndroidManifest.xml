@@ -7,8 +7,8 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/cat_logo"
-        android:roundIcon="@drawable/cat_logo"
+        android:icon="@drawable/ic_launcher_adaptive"
+        android:roundIcon="@drawable/ic_launcher_adaptive"
         android:label="Аудиокниги"
         android:supportsRtl="true">
 
