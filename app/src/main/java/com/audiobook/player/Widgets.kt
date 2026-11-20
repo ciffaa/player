@@ -59,12 +59,12 @@ object WidgetUpdater {
             )
         }
 
-        val playIcon = if (lastIsPlaying) "⏸" else "▶"
+        val playIconRes = if (lastIsPlaying) R.drawable.ic_pause else R.drawable.ic_play
 
         val gridIds = manager.getAppWidgetIds(ComponentName(context, GridWidgetProvider::class.java))
         for (id in gridIds) {
             val views = RemoteViews(context.packageName, R.layout.widget_grid)
-            views.setTextViewText(R.id.widget_play_pause, playIcon)
+            views.setImageViewResource(R.id.widget_play_pause, playIconRes)
             if (lastCover != null) {
                 views.setImageViewBitmap(R.id.widget_cover, lastCover)
             } else {
@@ -82,7 +82,7 @@ object WidgetUpdater {
             val views = RemoteViews(context.packageName, R.layout.widget_bar)
             views.setTextViewText(R.id.widget_book, lastBook)
             views.setTextViewText(R.id.widget_chapter, lastChapter)
-            views.setTextViewText(R.id.widget_play_pause, playIcon)
+            views.setImageViewResource(R.id.widget_play_pause, playIconRes)
             if (lastCover != null) {
                 views.setImageViewBitmap(R.id.widget_cover, lastCover)
             } else {
