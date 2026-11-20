@@ -118,8 +118,8 @@ class MainActivity : Activity() {
 
     private val badges = listOf(
         BadgeOption("blep", "Кот с язычком", R.drawable.cat_logo),
-        BadgeOption("grumpy", "Кот угрюмый", R.drawable.cat_grumpy),
-        BadgeOption("curious", "Кот любопытный", R.drawable.cat_curious)
+        BadgeOption("grumpy", "Кот угрюмый", R.drawable.cat_logo),
+        BadgeOption("curious", "Кот любопытный", R.drawable.cat_logo)
     )
 
     private var currentTheme: AppTheme = themes[0]
