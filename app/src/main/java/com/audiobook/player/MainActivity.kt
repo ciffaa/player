@@ -117,9 +117,8 @@ class MainActivity : Activity() {
     )
 
     private val badges = listOf(
-        BadgeOption("blep", "Кот с язычком", R.drawable.cat_logo),
-        BadgeOption("grumpy", "Кот угрюмый", R.drawable.cat_logo),
-        BadgeOption("curious", "Кот любопытный", R.drawable.cat_logo)
+        BadgeOption("v1", "Вариант 1", R.drawable.cat_logo),
+        BadgeOption("v2", "Вариант 2", R.drawable.cat_curious)
     )
 
     private var currentTheme: AppTheme = themes[0]
@@ -193,7 +192,7 @@ class MainActivity : Activity() {
         val savedThemeId = prefs.getString("app_theme", "dark")
         currentTheme = themes.find { it.id == savedThemeId } ?: themes[0]
 
-        val savedBadgeId = prefs.getString("app_badge", "blep")
+        val savedBadgeId = prefs.getString("app_badge", "v1")
         currentBadge = badges.find { it.id == savedBadgeId } ?: badges[0]
 
         buildUI()
@@ -699,7 +698,7 @@ class MainActivity : Activity() {
                     }
                 }
                 clipToOutline = true
-                layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply {
                     marginEnd = dp(14)
                 }
             }
