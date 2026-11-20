@@ -46,13 +46,13 @@
             android:textSize="13sp" />
     </LinearLayout>
 
-    <TextView
+    <ImageView
         android:id="@+id/widget_play_pause"
         android:layout_width="60dp"
         android:layout_height="60dp"
         android:background="@drawable/widget_circle_btn"
-        android:gravity="center"
-        android:text="▶"
-        android:textColor="#1E1E24"
-        android:textSize="26sp" />
+        android:padding="16dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_play"
+        android:tint="#1E1E24" />
 </LinearLayout>
