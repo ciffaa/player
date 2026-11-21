@@ -183,6 +183,10 @@ class MainActivity : Activity() {
     private lateinit var themeButtonsContainer: LinearLayout
     private lateinit var badgeSectionLabel: TextView
     private lateinit var badgeButtonsContainer: LinearLayout
+    private lateinit var rewindSectionLabel: TextView
+    private lateinit var rewindCard: LinearLayout
+    private lateinit var rewindTitle: TextView
+    private lateinit var rewindStatus: TextView
     private lateinit var aiSectionLabel: TextView
     private lateinit var aiKeyCard: LinearLayout
     private lateinit var aiKeyTitle: TextView
@@ -204,6 +208,10 @@ class MainActivity : Activity() {
     private var lastCoverBookUri: String? = null
     private val attemptedCoverSearch = mutableSetOf<String>()
     private var sleepTimerEndMs = 0L
+
+    private var wasPlayingPreviously = false
+    private var pauseRecordedAtMs = 0L
+    private var suppressNextRewindOnce = false
 
     private val updateProgressTask = object : Runnable {
         override fun run() {
@@ -242,6 +250,59 @@ class MainActivity : Activity() {
         }
 
         showTab(0)
+    }
+
+    private fun isSmartRewindEnabled(): Boolean {
+        return getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .getBoolean("smart_rewind_enabled", true)
+    }
+
+    private fun computeSmartRewindMs(pauseDurationMs: Long): Long {
+        if (!isSmartRewindEnabled() || pauseDurationMs < 60_000L) return 0L
+        return when {
+            pauseDurationMs < 10 * 60_000L -> 10_000L
+            pauseDurationMs < 60 * 60_000L -> 25_000L
+            else -> 45_000L
+        }
+    }
+
+    private fun handlePlaybackStateTransition(player: Player) {
+        val now = System.currentTimeMillis()
+        val isPlayingNow = player.isPlaying
+
+        if (wasPlayingPreviously && !isPlayingNow) {
+            pauseRecordedAtMs = now
+            saveCurrentProgress()
+        } else if (!wasPlayingPreviously && isPlayingNow) {
+            if (suppressNextRewindOnce) {
+                suppressNextRewindOnce = false
+                pauseRecordedAtMs = 0L
+            } else {
+                val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                val lastPauseFromPrefs = prefs.getLong("last_pause_timestamp_ms", 0L)
+                val effectivePauseStart = if (pauseRecordedAtMs > 0L) pauseRecordedAtMs else lastPauseFromPrefs
+                pauseRecordedAtMs = 0L
+                prefs.edit().remove("last_pause_timestamp_ms").apply()
+
+                if (effectivePauseStart > 0L && now > effectivePauseStart) {
+                    val pauseDurationMs = now - effectivePauseStart
+                    val rewindMs = computeSmartRewindMs(pauseDurationMs)
+                    if (rewindMs > 0L) {
+                        val curPos = player.currentPosition.coerceAtLeast(0L)
+                        if (curPos > 1_500L) {
+                            val targetPos = (curPos - rewindMs).coerceAtLeast(0L)
+                            suppressNextRewindOnce = true
+                            player.seekTo(targetPos)
+                            saveCurrentProgress()
+                            val sec = (rewindMs / 1000L).toInt()
+                            Toast.makeText(this, "Откат на ${sec}с после паузы", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+
+        wasPlayingPreviously = isPlayingNow
     }
 
     private fun applyLauncherIcon(badgeId: String) {
@@ -358,6 +419,7 @@ class MainActivity : Activity() {
         speedBtn = makeTextAction("1x", 16f) { cycleSpeed() }
         back15Btn = makeTextAction("↺ 15", 17f) {
             controller?.let {
+                suppressNextRewindOnce = true
                 it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
                 saveCurrentProgress()
             }
@@ -373,13 +435,20 @@ class MainActivity : Activity() {
             setPadding(dp(18), dp(18), dp(18), dp(18))
             layoutParams = LinearLayout.LayoutParams(dp(68), dp(68))
             setOnClickListener {
-                controller?.let { if (it.isPlaying) it.pause() else it.play() }
+                controller?.let {
+                    if (it.isPlaying) {
+                        it.pause()
+                    } else {
+                        it.play()
+                    }
+                }
             }
         }
         playContainer.addView(playPauseBtn)
 
         fwd30Btn = makeTextAction("30 ↻", 17f) {
             controller?.let {
+                suppressNextRewindOnce = true
                 val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
                 it.seekTo(target)
                 saveCurrentProgress()
@@ -444,6 +513,7 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(sb: SeekBar?) {
                     isSeeking = false
                     sb?.let {
+                        suppressNextRewindOnce = true
                         controller?.seekTo(it.progress.toLong())
                         saveCurrentProgress()
                     }
@@ -580,10 +650,50 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
+        rewindSectionLabel = TextView(this).apply {
+            text = "Воспроизведение"
+            textSize = 14f
+            setPadding(dp(4), dp(20), dp(4), dp(10))
+        }
+
+        rewindTitle = TextView(this).apply {
+            text = "Умный автооткат после паузы"
+            textSize = 16f
+        }
+
+        rewindStatus = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, dp(4), 0, 0)
+        }
+
+        rewindCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
+            }
+            setOnClickListener {
+                val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                val nextVal = !isSmartRewindEnabled()
+                prefs.edit().putBoolean("smart_rewind_enabled", nextVal).apply()
+                updateRewindCard()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (nextVal) "Умный автооткат включён" else "Умный автооткат выключен",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            addView(rewindTitle)
+            addView(rewindStatus)
+        }
+
         aiSectionLabel = TextView(this).apply {
             text = "ИИ-поиск описаний (Gemini API)"
             textSize = 14f
-            setPadding(dp(4), dp(20), dp(4), dp(10))
+            setPadding(dp(4), dp(16), dp(4), dp(10))
         }
 
         aiKeyTitle = TextView(this).apply {
@@ -646,6 +756,8 @@ class MainActivity : Activity() {
         settingsContainer.addView(themeButtonsContainer)
         settingsContainer.addView(badgeSectionLabel)
         settingsContainer.addView(badgeButtonsContainer)
+        settingsContainer.addView(rewindSectionLabel)
+        settingsContainer.addView(rewindCard)
         settingsContainer.addView(aiSectionLabel)
         settingsContainer.addView(aiKeyCard)
         settingsContainer.addView(helpSectionLabel)
@@ -699,6 +811,22 @@ class MainActivity : Activity() {
         rootLayout.addView(bottomNavBar)
 
         setContentView(rootLayout)
+    }
+
+    private fun updateRewindCard() {
+        val enabled = isSmartRewindEnabled()
+        val t = currentTheme
+        rewindCard.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            setColor(if (enabled) t.activeCard else t.surface)
+        }
+        rewindTitle.setTextColor(t.textPrimary)
+        rewindStatus.setTextColor(t.textSecondary)
+        rewindStatus.text = if (enabled) {
+            "Включён: откат 10–45 сек после паузы от 1 мин"
+        } else {
+            "Выключен — нажмите, чтобы включить"
+        }
     }
 
     private fun computeBookDurationsAsync(bookUriStr: String, files: List<DocumentFile>) {
@@ -849,6 +977,7 @@ class MainActivity : Activity() {
             • 1x — переключение скорости (до 2x).
             • ↺ 15 и 30 ↻ — перемотка назад на 15 сек и вперёд на 30 сек.
             • ⏱ — таймер сна.
+            • Умный автооткат после паузы — мягко сдвигает позицию назад при возвращении после паузы от 1 минуты.
         """.trimIndent()
 
         AlertDialog.Builder(this)
@@ -883,6 +1012,7 @@ class MainActivity : Activity() {
             theme = currentTheme,
             onJumpTo = { targetChapter: Int, targetPos: Long ->
                 player?.let { p ->
+                    suppressNextRewindOnce = true
                     val safeChap = targetChapter.coerceIn(0, (p.mediaItemCount - 1).coerceAtLeast(0))
                     p.seekTo(safeChap, targetPos.coerceAtLeast(0L))
                     p.play()
@@ -1712,6 +1842,7 @@ class MainActivity : Activity() {
         settingsTitleView.setTextColor(t.textPrimary)
         themeSectionLabel.setTextColor(t.textSecondary)
         badgeSectionLabel.setTextColor(t.textSecondary)
+        rewindSectionLabel.setTextColor(t.textSecondary)
         aiSectionLabel.setTextColor(t.textSecondary)
         helpSectionLabel.setTextColor(t.textSecondary)
         helpCard.background = GradientDrawable().apply {
@@ -1722,6 +1853,7 @@ class MainActivity : Activity() {
         helpCardSubtitle.setTextColor(t.textSecondary)
         rebuildThemeButtons()
         rebuildBadgeButtons()
+        updateRewindCard()
         updateAiKeyCard()
 
         bottomNavBar.setBackgroundColor(t.navBg)
@@ -1921,6 +2053,7 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Главы M4B (${activeM4bChapters.size})")
                 .setItems(labels) { _, which ->
+                    suppressNextRewindOnce = true
                     val target = activeM4bChapters[which]
                     player.seekTo(0, target.startMs)
                     player.play()
@@ -1939,6 +2072,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("Главы ($count)")
             .setItems(titles) { _, which ->
+                suppressNextRewindOnce = true
                 player.seekTo(which, 0L)
                 player.play()
                 saveCurrentProgress()
@@ -1957,11 +2091,15 @@ class MainActivity : Activity() {
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture?.addListener({
             controller = controllerFuture?.get()
-            controller?.addListener(object : Player.Listener {
-                override fun onEvents(player: Player, events: Player.Events) {
-                    updateUI()
-                }
-            })
+            controller?.let { p ->
+                wasPlayingPreviously = p.isPlaying
+                p.addListener(object : Player.Listener {
+                    override fun onEvents(player: Player, events: Player.Events) {
+                        handlePlaybackStateTransition(player)
+                        updateUI()
+                    }
+                })
+            }
             restoreSavedBookIfEmpty()
             updateUI()
             handler.post(updateProgressTask)
@@ -1970,9 +2108,17 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         saveCurrentProgress()
+        val player = controller
+        if (player != null && !player.isPlaying && wasPlayingPreviously) {
+            getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putLong("last_pause_timestamp_ms", System.currentTimeMillis())
+                .apply()
+        }
         handler.removeCallbacks(updateProgressTask)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controller = null
+        wasPlayingPreviously = false
         super.onStop()
     }
 
@@ -2120,8 +2266,10 @@ class MainActivity : Activity() {
             .putString("folder_uri", bookUriStr)
             .putInt("last_index", savedIndex)
             .putLong("last_pos", savedPos)
+            .remove("last_pause_timestamp_ms")
             .apply()
 
+        suppressNextRewindOnce = true
         activeM4bChapters = emptyList()
         lastLoadedChapterUri = null
         lastArtworkSize = -1
@@ -2221,6 +2369,7 @@ class MainActivity : Activity() {
                     val safeIndex = startIndex.coerceIn(0, items.lastIndex)
                     val activeController = controller
                     if (activeController != null) {
+                        suppressNextRewindOnce = true
                         activeController.setMediaItems(items, safeIndex, startPos)
                         activeController.prepare()
                         if (autoPlay) {
