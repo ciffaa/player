@@ -24,8 +24,8 @@
             android:name=".MainActivityAliasV1"
             android:enabled="true"
             android:exported="true"
-            android:icon="@drawable/cat_logo"
-            android:roundIcon="@drawable/cat_logo"
+            android:icon="@drawable/ic_badge_v1"
+            android:roundIcon="@drawable/ic_badge_v1"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -37,8 +37,8 @@
             android:name=".MainActivityAliasV2"
             android:enabled="false"
             android:exported="true"
-            android:icon="@drawable/cat_curious"
-            android:roundIcon="@drawable/cat_curious"
+            android:icon="@drawable/ic_badge_v2"
+            android:roundIcon="@drawable/ic_badge_v2"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
