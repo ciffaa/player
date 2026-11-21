@@ -3,18 +3,21 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher_adaptive"
-        android:roundIcon="@drawable/ic_launcher_adaptive"
+        android:icon="@mipmap/ic_launcher"
         android:label="Аудиокниги"
-        android:supportsRtl="true">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -35,6 +38,10 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.audiobook.player.ACTION_PLAY_PAUSE" />
+                <action android:name="com.audiobook.player.ACTION_FORWARD" />
+                <action android:name="com.audiobook.player.ACTION_REWIND" />
+                <action android:name="com.audiobook.player.ACTION_UPDATE_WIDGET" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -46,6 +53,10 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.audiobook.player.ACTION_PLAY_PAUSE" />
+                <action android:name="com.audiobook.player.ACTION_FORWARD" />
+                <action android:name="com.audiobook.player.ACTION_REWIND" />
+                <action android:name="com.audiobook.player.ACTION_UPDATE_WIDGET" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -53,5 +64,4 @@
         </receiver>
 
     </application>
-
 </manifest>
