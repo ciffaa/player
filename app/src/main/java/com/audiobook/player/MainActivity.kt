@@ -1303,4 +1303,102 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
-                val bookName = dir.name ?: "Ау
+                val bookName = dir.name ?: "Аудиокнига"
+                val files = mutableListOf<DocumentFile>()
+                collectAudioFiles(dir, files)
+
+                runOnUiThread {
+                    bookTitleView.text = bookName
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("last_book_title", bookName)
+                        .apply()
+
+                    if (files.isEmpty()) {
+                        chapterBtn.text = "В этой папке нет аудиофайлов"
+                        return@runOnUiThread
+                    }
+
+                    val items = files.map { file ->
+                        val title = file.name?.substringBeforeLast('.') ?: "Глава"
+                        MediaItem.Builder()
+                            .setUri(file.uri)
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(title)
+                                    .setArtist(bookName)
+                                    .build()
+                            )
+                            .build()
+                    }
+
+                    val safeIndex = startIndex.coerceIn(0, items.lastIndex)
+                    val activeController = controller
+                    if (activeController != null) {
+                        activeController.setMediaItems(items, safeIndex, startPos)
+                        activeController.prepare()
+                        if (autoPlay) {
+                            activeController.playWhenReady = true
+                            activeController.play()
+                        }
+                    }
+                    updateUI()
+                }
+            } finally {
+                isLoadingFolder = false
+            }
+        }.start()
+    }
+
+    private fun updateUI() {
+        val player = controller ?: return
+        val itemMeta = player.currentMediaItem?.mediaMetadata
+        if (itemMeta != null) {
+            bookTitleView.text = itemMeta.artist ?: "Аудиокнига"
+            val chapterName = itemMeta.title ?: "Глава ${player.currentMediaItemIndex + 1}"
+            chapterBtn.text = "☰  $chapterName"
+        }
+
+        val artBytes = player.mediaMetadata.artworkData
+        val artSize = artBytes?.size ?: 0
+        if (artSize != lastArtworkSize) {
+            lastArtworkSize = artSize
+            if (artBytes != null) {
+                Thread {
+                    val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && bmp != null) {
+                            coverView.setImageBitmap(bmp)
+                        }
+                    }
+                }.start()
+            } else {
+                coverView.setImageResource(android.R.drawable.ic_media_play)
+            }
+        }
+
+        playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        updateProgressOnly()
+    }
+
+    private fun updateProgressOnly() {
+        val player = controller ?: return
+        val dur = player.duration.coerceAtLeast(0)
+        val pos = player.currentPosition.coerceAtLeast(0)
+        if (!isSeeking) {
+            seekBar.max = dur.toInt()
+            seekBar.progress = pos.toInt()
+            elapsedTimeView.text = formatTime(pos)
+            remainingTimeView.text = "-${formatTime((dur - pos).coerceAtLeast(0))}"
+        }
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSec = ms / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
+        else String.format("%02d:%02d", m, s)
+    }
+}
