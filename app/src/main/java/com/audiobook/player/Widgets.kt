@@ -7,49 +7,20 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
-import androidx.core.content.ContextCompat
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
 
 const val ACTION_PLAY_PAUSE = "com.audiobook.player.ACTION_PLAY_PAUSE"
 const val ACTION_FORWARD = "com.audiobook.player.ACTION_FORWARD"
 const val ACTION_REWIND = "com.audiobook.player.ACTION_REWIND"
 const val ACTION_UPDATE_WIDGET = "com.audiobook.player.ACTION_UPDATE_WIDGET"
 
-private fun withSessionController(context: Context, block: (MediaController) -> Unit) {
-    val serviceIntent = Intent(context, PlaybackService::class.java)
-    ContextCompat.startForegroundService(context, serviceIntent)
-
-    val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-    val future = MediaController.Builder(context, token).buildAsync()
-    future.addListener({
-        try {
-            val controller = future.get()
-            block(controller)
-            MediaController.releaseFuture(future)
-        } catch (_: Exception) {
-        }
-    }, ContextCompat.getMainExecutor(context))
-}
-
-private fun handleWidgetAction(context: Context, action: String?) {
-    when (action) {
-        ACTION_PLAY_PAUSE -> withSessionController(context) { controller ->
-            if (controller.isPlaying) {
-                controller.pause()
-            } else {
-                controller.play()
-            }
-        }
-        ACTION_FORWARD -> withSessionController(context) { controller ->
-            val target = (controller.currentPosition + 30_000L)
-                .coerceAtMost(controller.duration.coerceAtLeast(0L))
-            controller.seekTo(target)
-        }
-        ACTION_REWIND -> withSessionController(context) { controller ->
-            val target = (controller.currentPosition - 15_000L).coerceAtLeast(0L)
-            controller.seekTo(target)
-        }
+private fun dispatchToService(context: Context, action: String?) {
+    if (action == null) return
+    val serviceIntent = Intent(context, PlaybackService::class.java).apply {
+        this.action = action
+    }
+    try {
+        context.startService(serviceIntent)
+    } catch (_: Exception) {
     }
 }
 
@@ -64,7 +35,7 @@ class GridWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         when (intent.action) {
-            ACTION_PLAY_PAUSE, ACTION_FORWARD, ACTION_REWIND -> handleWidgetAction(context, intent.action)
+            ACTION_PLAY_PAUSE, ACTION_FORWARD, ACTION_REWIND -> dispatchToService(context, intent.action)
             ACTION_UPDATE_WIDGET -> {
                 val mgr = AppWidgetManager.getInstance(context)
                 val ids = mgr.getAppWidgetIds(ComponentName(context, GridWidgetProvider::class.java))
@@ -85,7 +56,7 @@ class BarWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         when (intent.action) {
-            ACTION_PLAY_PAUSE, ACTION_FORWARD, ACTION_REWIND -> handleWidgetAction(context, intent.action)
+            ACTION_PLAY_PAUSE, ACTION_FORWARD, ACTION_REWIND -> dispatchToService(context, intent.action)
             ACTION_UPDATE_WIDGET -> {
                 val mgr = AppWidgetManager.getInstance(context)
                 val ids = mgr.getAppWidgetIds(ComponentName(context, BarWidgetProvider::class.java))
