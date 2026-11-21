@@ -1437,13 +1437,7 @@ class MainActivity : Activity() {
         return callGeminiText(prompt, apiKey)
     }
 
-    private fun resolveGeminiModel(apiKey: String): Pair<String?, String?> {
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val cached = prefs.getString("gemini_model_cache", null)?.trim()
-        if (!cached.isNullOrEmpty()) {
-            return Pair(cached, null)
-        }
-
+    private fun listCandidateModels(apiKey: String): Pair<List<String>, String?> {
         return try {
             val listUrl = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=50")
             val conn = (listUrl.openConnection() as HttpURLConnection).apply {
@@ -1458,11 +1452,11 @@ class MainActivity : Activity() {
 
             if (code !in 200..299) {
                 val errMsg = extractApiErrorMessage(body) ?: "HTTP $code"
-                return Pair(null, "ListModels: $errMsg")
+                return Pair(emptyList(), "ListModels: $errMsg")
             }
 
             val modelsArr = JSONObject(body).optJSONArray("models")
-            val candidates = mutableListOf<String>()
+            val available = mutableListOf<String>()
             if (modelsArr != null) {
                 for (i in 0 until modelsArr.length()) {
                     val mObj = modelsArr.optJSONObject(i) ?: continue
@@ -1479,30 +1473,38 @@ class MainActivity : Activity() {
                     if (!supportsGen) continue
                     val fullName = mObj.optString("name", "").removePrefix("models/")
                     if (fullName.isNotEmpty() && !fullName.contains("embedding", ignoreCase = true)) {
-                        candidates.add(fullName)
+                        available.add(fullName)
                     }
                 }
             }
 
             val preferred = listOf(
                 "gemini-3.8-flash",
+                "gemini-2.5-flash",
                 "gemini-2.0-flash",
                 "gemini-2.0-flash-lite",
                 "gemini-1.5-flash",
                 "gemini-1.5-flash-latest"
             )
-            val chosen = preferred.firstOrNull { p -> candidates.any { it.equals(p, ignoreCase = true) } }
-                ?: candidates.firstOrNull { it.contains("flash", ignoreCase = true) }
-                ?: candidates.firstOrNull()
+            val ordered = mutableListOf<String>()
+            for (p in preferred) {
+                val match = available.firstOrNull { it.equals(p, ignoreCase = true) }
+                if (match != null && !ordered.contains(match)) ordered.add(match)
+            }
+            for (a in available) {
+                if (!ordered.contains(a) && a.contains("flash", ignoreCase = true)) ordered.add(a)
+            }
+            for (a in available) {
+                if (!ordered.contains(a)) ordered.add(a)
+            }
 
-            if (chosen != null) {
-                prefs.edit().putString("gemini_model_cache", chosen).apply()
-                Pair(chosen, null)
+            if (ordered.isEmpty()) {
+                Pair(preferred, null)
             } else {
-                Pair(null, "Нет доступных моделей generateContent")
+                Pair(ordered, null)
             }
         } catch (e: Exception) {
-            Pair(null, "ListModels: ${e.javaClass.simpleName}: ${e.message}")
+            Pair(emptyList(), "ListModels: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -1534,10 +1536,6 @@ class MainActivity : Activity() {
         val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
 
         if (code !in 200..299) {
-            if (code == 404) {
-                getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-                    .edit().remove("gemini_model_cache").apply()
-            }
             val detail = extractApiErrorMessage(body) ?: "HTTP $code"
             return Pair(null, "Gemini ($model): $detail")
         }
@@ -1559,9 +1557,9 @@ class MainActivity : Activity() {
     }
 
     private fun callGeminiText(prompt: String, apiKey: String): Pair<String?, String?> {
-        val (resolvedModel, resolveErr) = resolveGeminiModel(apiKey)
-        if (resolvedModel == null) {
-            return Pair(null, resolveErr ?: "Gemini: модель не найдена")
+        val (models, listErr) = listCandidateModels(apiKey)
+        if (models.isEmpty()) {
+            return Pair(null, listErr ?: "Gemini: нет доступных моделей")
         }
 
         val payload = JSONObject().put(
@@ -1574,19 +1572,35 @@ class MainActivity : Activity() {
             )
         ).toString()
 
-        var attempt = 0
-        while (true) {
-            attempt++
-            try {
-                return executeGenerateRequest(resolvedModel, payload, apiKey)
-            } catch (e: SocketTimeoutException) {
-                if (attempt >= 2) {
-                    return Pair(null, "Gemini ($resolvedModel): таймаут ответа")
+        var lastError: String? = null
+        for (model in models) {
+            var attempt = 0
+            while (attempt < 2) {
+                attempt++
+                try {
+                    val (res, err) = executeGenerateRequest(model, payload, apiKey)
+                    if (res != null) {
+                        getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                            .edit().putString("gemini_model_cache", model).apply()
+                        return Pair(res, null)
+                    }
+                    lastError = err
+                    val lowerErr = (err ?: "").lowercase()
+                    val transient = lowerErr.contains("high demand") ||
+                        lowerErr.contains("overloaded") ||
+                        lowerErr.contains("rate limit") ||
+                        lowerErr.contains("quota")
+                    if (!transient) break
+                } catch (_: SocketTimeoutException) {
+                    lastError = "Gemini ($model): таймаут ответа"
+                } catch (e: Exception) {
+                    lastError = "Gemini ($model): ${e.javaClass.simpleName}: ${e.message}"
+                    break
                 }
-            } catch (e: Exception) {
-                return Pair(null, "Gemini ($resolvedModel): ${e.javaClass.simpleName}: ${e.message}")
             }
         }
+
+        return Pair(null, lastError ?: "Gemini: ошибка запроса")
     }
 
     private fun fetchFromGoogleBooks(query: String): String? {
