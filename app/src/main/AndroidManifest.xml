@@ -17,13 +17,34 @@
 
         <activity
             android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <activity-alias
+            android:name=".MainActivityAliasV1"
+            android:enabled="true"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:icon="@drawable/cat_logo"
+            android:roundIcon="@drawable/cat_logo"
+            android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".MainActivityAliasV2"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/cat_curious"
+            android:roundIcon="@drawable/cat_curious"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <service
             android:name=".PlaybackService"
