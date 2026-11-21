@@ -1390,3 +1390,302 @@ class MainActivity : Activity() {
                 } catch (_: Exception) {
                 }
             }.start()
+        }
+    }
+
+    private fun scanLibrary() {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val libUriStr = prefs.getString("library_uri", null)
+        if (libUriStr == null) {
+            libraryStatusView.text = "Нажмите кнопку выше и выберите папку Books"
+            return
+        }
+
+        libraryStatusView.text = "Сканирую библиотеку..."
+        libraryListLayout.removeAllViews()
+
+        Thread {
+            val rootDir = DocumentFile.fromTreeUri(this, Uri.parse(libUriStr))
+            val books = mutableListOf<BookEntry>()
+            if (rootDir != null) {
+                findBooks(rootDir, "", books)
+            }
+            books.sortBy { it.title.lowercase() }
+
+            runOnUiThread {
+                if (books.isEmpty()) {
+                    libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
+                } else {
+                    libraryStatusView.text = "Найдено книг: ${books.size}"
+                    val activeUri = prefs.getString("folder_uri", null)
+                    for (book in books) {
+                        libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun findBooks(dir: DocumentFile, parentPath: String, out: MutableList<BookEntry>) {
+        val entries = dir.listFiles()
+        val hasAudioHere = entries.any { file ->
+            val name = file.name?.lowercase() ?: ""
+            file.isFile && audioExt.any { name.endsWith(it) }
+        }
+
+        val currentName = dir.name ?: "Книга"
+        if (hasAudioHere) {
+            out.add(BookEntry(currentName, parentPath, dir.uri.toString()))
+        }
+
+        val nextPath = if (parentPath.isEmpty()) currentName else "$parentPath / $currentName"
+        for (entry in entries) {
+            if (entry.isDirectory) {
+                findBooks(entry, nextPath, out)
+            }
+        }
+    }
+
+    private fun createBookCard(book: BookEntry, isActive: Boolean): View {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
+        val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
+        val t = currentTheme
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(if (isActive) t.activeCard else t.surface)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, dp(10))
+            }
+            setOnClickListener {
+                switchToBook(book.uriString)
+            }
+        }
+
+        val titleTv = TextView(this).apply {
+            text = if (isActive) "▶ ${book.title}" else book.title
+            textSize = 16f
+            setTextColor(t.textPrimary)
+        }
+
+        val progressText = if (savedIdx >= 0) {
+            "Глава ${savedIdx + 1} • ${formatTime(savedPos)}"
+        } else {
+            "Не начата"
+        }
+
+        val subTv = TextView(this).apply {
+            text = if (book.subtitle.isNotEmpty()) "${book.subtitle}  |  $progressText" else progressText
+            textSize = 12f
+            setTextColor(t.textSecondary)
+            setPadding(0, dp(4), 0, 0)
+        }
+
+        card.addView(titleTv)
+        card.addView(subTv)
+        return card
+    }
+
+    private fun switchToBook(bookUriStr: String) {
+        saveCurrentProgress()
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val savedIndex = prefs.getInt("idx_$bookUriStr", 0)
+        val savedPos = prefs.getLong("pos_$bookUriStr", 0L)
+
+        prefs.edit()
+            .putString("folder_uri", bookUriStr)
+            .putInt("last_index", savedIndex)
+            .putLong("last_pos", savedPos)
+            .apply()
+
+        lastArtworkSize = -1
+        lastCoverBookUri = null
+        showTab(0)
+        loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true, showLoadingHint = true)
+    }
+
+    private fun saveCurrentProgress() {
+        val player = controller ?: return
+        if (player.mediaItemCount == 0) return
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val currentUri = prefs.getString("folder_uri", null) ?: return
+        val bookTitle = player.currentMediaItem?.mediaMetadata?.artist?.toString()
+        val editor = prefs.edit()
+            .putInt("last_index", player.currentMediaItemIndex)
+            .putLong("last_pos", player.currentPosition)
+            .putInt("idx_$currentUri", player.currentMediaItemIndex)
+            .putLong("pos_$currentUri", player.currentPosition)
+        if (!bookTitle.isNullOrEmpty()) {
+            editor.putString("last_book_title", bookTitle)
+        }
+        editor.apply()
+    }
+
+    private fun restoreSavedBookIfEmpty() {
+        val player = controller ?: return
+        if (player.mediaItemCount > 0 || isLoadingFolder) return
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val uriStr = prefs.getString("folder_uri", null) ?: return
+        val index = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
+        val pos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
+        loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false, showLoadingHint = false)
+    }
+
+    private fun collectAudioFiles(dir: DocumentFile, out: MutableList<DocumentFile>) {
+        val entries = dir.listFiles().sortedBy { it.name?.lowercase() }
+        for (entry in entries) {
+            if (entry.isDirectory) {
+                collectAudioFiles(entry, out)
+            } else if (entry.isFile) {
+                val name = entry.name?.lowercase() ?: ""
+                if (audioExt.any { name.endsWith(it) }) {
+                    out.add(entry)
+                }
+            }
+        }
+    }
+
+    private fun loadFolder(
+        treeUri: Uri,
+        startIndex: Int,
+        startPos: Long,
+        autoPlay: Boolean,
+        showLoadingHint: Boolean
+    ) {
+        if (isLoadingFolder) return
+        isLoadingFolder = true
+        if (showLoadingHint) {
+            chapterBtn.text = "Загружаю главы..."
+        }
+
+        Thread {
+            try {
+                val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
+                val bookName = dir.name ?: "Аудиокнига"
+                val files = mutableListOf<DocumentFile>()
+                collectAudioFiles(dir, files)
+
+                runOnUiThread {
+                    bookTitleView.text = bookName
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("last_book_title", bookName)
+                        .apply()
+
+                    if (files.isEmpty()) {
+                        chapterBtn.text = "В этой папке нет аудиофайлов"
+                        return@runOnUiThread
+                    }
+
+                    val items = files.map { file ->
+                        val title = file.name?.substringBeforeLast('.') ?: "Глава"
+                        MediaItem.Builder()
+                            .setUri(file.uri)
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(title)
+                                    .setArtist(bookName)
+                                    .build()
+                            )
+                            .build()
+                    }
+
+                    val safeIndex = startIndex.coerceIn(0, items.lastIndex)
+                    val activeController = controller
+                    if (activeController != null) {
+                        activeController.setMediaItems(items, safeIndex, startPos)
+                        activeController.prepare()
+                        if (autoPlay) {
+                            activeController.playWhenReady = true
+                            activeController.play()
+                        }
+                    }
+                    updateUI()
+                }
+            } finally {
+                isLoadingFolder = false
+            }
+        }.start()
+    }
+
+    private fun updateUI() {
+        val player = controller ?: return
+        val itemMeta = player.currentMediaItem?.mediaMetadata
+        val bookTitle = itemMeta?.artist?.toString() ?: "Аудиокнига"
+        if (itemMeta != null) {
+            bookTitleView.text = bookTitle
+            val chapterName = itemMeta.title ?: "Глава ${player.currentMediaItemIndex + 1}"
+            chapterBtn.text = "☰  $chapterName"
+        }
+
+        val bookUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .getString("folder_uri", null)
+        val artBytes = player.mediaMetadata.artworkData
+        val artSize = artBytes?.size ?: 0
+        val bookChanged = bookUri != lastCoverBookUri
+
+        if (bookChanged || artSize != lastArtworkSize) {
+            lastCoverBookUri = bookUri
+            lastArtworkSize = artSize
+
+            val customFile = bookUri?.let { getCoverFile(it, custom = true) }
+            if (customFile != null && customFile.exists()) {
+                Thread {
+                    val bmp = BitmapFactory.decodeFile(customFile.absolutePath)
+                    if (bmp != null) {
+                        syncWidgetCover(bmp)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
+                        }
+                    }
+                }.start()
+            } else if (artBytes != null) {
+                Thread {
+                    val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && bmp != null) {
+                            coverView.setImageBitmap(bmp)
+                        }
+                    }
+                }.start()
+            } else {
+                coverView.setImageResource(android.R.drawable.ic_media_play)
+                if (bookUri != null && bookTitle != "Аудиокнига") {
+                    loadFallbackCoverAsync(bookUri, bookTitle)
+                }
+            }
+        }
+
+        playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        updateProgressOnly()
+    }
+
+    private fun updateProgressOnly() {
+        val player = controller ?: return
+        val dur = player.duration.coerceAtLeast(0)
+        val pos = player.currentPosition.coerceAtLeast(0)
+        if (!isSeeking) {
+            seekBar.max = dur.toInt()
+            seekBar.progress = pos.toInt()
+            elapsedTimeView.text = formatTime(pos)
+            remainingTimeView.text = "-${formatTime((dur - pos).coerceAtLeast(0))}"
+        }
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSec = ms / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
+        else String.format("%02d:%02d", m, s)
+    }
+}
