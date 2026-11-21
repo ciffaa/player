@@ -21,8 +21,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
@@ -175,8 +177,12 @@ class MainActivity : Activity() {
     private lateinit var bookProgressTextView: TextView
 
     private lateinit var pickLibraryBtn: Button
+    private lateinit var searchBarContainer: LinearLayout
+    private lateinit var searchInput: EditText
+    private lateinit var clearSearchBtn: TextView
     private lateinit var libraryStatusView: TextView
     private lateinit var libraryListLayout: LinearLayout
+    private var cachedBooks: List<BookEntry> = emptyList()
 
     private lateinit var settingsTitleView: TextView
     private lateinit var themeSectionLabel: TextView
@@ -583,10 +589,53 @@ class MainActivity : Activity() {
             }
         }
 
+        searchInput = EditText(this).apply {
+            hint = "Поиск по книге, автору или папке..."
+            textSize = 14f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine(true)
+            background = null
+            setPadding(0, dp(4), dp(8), dp(4))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    clearSearchBtn.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                    renderFilteredLibrary()
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
+
+        clearSearchBtn = TextView(this).apply {
+            text = "✕"
+            textSize = 16f
+            visibility = View.GONE
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(4), dp(4), dp(4))
+            setOnClickListener {
+                searchInput.text.clear()
+            }
+        }
+
+        searchBarContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(8), dp(12), dp(8))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+            }
+            addView(searchInput)
+            addView(clearSearchBtn)
+        }
+
         libraryStatusView = TextView(this).apply {
             text = "Папка библиотеки не выбрана"
             textSize = 14f
-            setPadding(dp(4), dp(12), dp(4), dp(12))
+            setPadding(dp(4), dp(10), dp(4), dp(10))
         }
 
         val scrollView = ScrollView(this)
@@ -599,6 +648,7 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
+        libraryContainer.addView(searchBarContainer)
         libraryContainer.addView(libraryStatusView)
         libraryContainer.addView(scrollView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1837,6 +1887,13 @@ class MainActivity : Activity() {
         bookProgressTextView.setTextColor(t.textSecondary)
         updateTimerButton()
 
+        searchBarContainer.background = GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setColor(t.surface)
+        }
+        searchInput.setTextColor(t.textPrimary)
+        searchInput.setHintTextColor(t.textSecondary)
+        clearSearchBtn.setTextColor(t.textSecondary)
         libraryStatusView.setTextColor(t.textSecondary)
 
         settingsTitleView.setTextColor(t.textPrimary)
@@ -2155,6 +2212,51 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun renderFilteredLibrary() {
+        if (!::libraryListLayout.isInitialized) return
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val libUriStr = prefs.getString("library_uri", null) ?: return
+        val activeUri = prefs.getString("folder_uri", null)
+        val rawQuery = searchInput.text?.toString()?.trim()?.lowercase() ?: ""
+        val terms = rawQuery.split(Regex("\\s+")).filter { it.isNotEmpty() }
+
+        val filtered = if (terms.isEmpty()) {
+            cachedBooks
+        } else {
+            cachedBooks.filter { book ->
+                val haystack = "${book.title} ${book.subtitle}".lowercase()
+                terms.all { haystack.contains(it) }
+            }
+        }
+
+        libraryListLayout.removeAllViews()
+        if (cachedBooks.isEmpty()) {
+            libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
+            return
+        }
+
+        libraryStatusView.text = if (terms.isEmpty()) {
+            "Найдено книг: ${cachedBooks.size}"
+        } else {
+            "Найдено: ${filtered.size} из ${cachedBooks.size}"
+        }
+
+        if (filtered.isEmpty()) {
+            val emptyTv = TextView(this).apply {
+                text = "Ничего не найдено по запросу «${searchInput.text?.toString()?.trim()}»"
+                textSize = 14f
+                setTextColor(currentTheme.textSecondary)
+                setPadding(dp(4), dp(12), dp(4), dp(12))
+            }
+            libraryListLayout.addView(emptyTv)
+            return
+        }
+
+        for (book in filtered) {
+            libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
+        }
+    }
+
     private fun scanLibrary() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val libUriStr = prefs.getString("library_uri", null)
@@ -2175,15 +2277,9 @@ class MainActivity : Activity() {
             books.sortBy { it.title.lowercase() }
 
             runOnUiThread {
-                if (books.isEmpty()) {
-                    libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
-                } else {
-                    libraryStatusView.text = "Найдено книг: ${books.size}"
-                    val activeUri = prefs.getString("folder_uri", null)
-                    for (book in books) {
-                        libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
-                    }
-                }
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                cachedBooks = books
+                renderFilteredLibrary()
             }
         }.start()
     }
