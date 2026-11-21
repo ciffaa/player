@@ -122,7 +122,7 @@ class MainActivity : Activity() {
 
     private var currentTheme: AppTheme = themes[0]
     private var currentBadge: BadgeOption = badges[0]
-    private var currentTab = 0 // 0 - Плеер, 1 - Библиотека, 2 - Настройки
+    private var currentTab = 0
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -166,6 +166,7 @@ class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var isSeeking = false
+    private var isLoadingFolder = false
     private var lastArtworkHash = 0
     private var sleepTimerEndMs = 0L
 
@@ -195,6 +196,14 @@ class MainActivity : Activity() {
 
         buildUI()
         applyTheme()
+
+        val savedBookTitle = prefs.getString("last_book_title", null)
+        val savedPos = prefs.getLong("last_pos", 0L)
+        if (!savedBookTitle.isNullOrEmpty()) {
+            bookTitleView.text = savedBookTitle
+            elapsedTimeView.text = formatTime(savedPos)
+        }
+
         showTab(0)
     }
 
@@ -215,7 +224,6 @@ class MainActivity : Activity() {
             )
         }
 
-        // --- 1. ЭКРАН ПЛЕЕРА ---
         playerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -381,7 +389,6 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        // --- 2. ЭКРАН БИБЛИОТЕКИ ---
         libraryContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -425,7 +432,6 @@ class MainActivity : Activity() {
             1f
         ))
 
-        // --- 3. ЭКРАН НАСТРОЕК ---
         settingsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -473,7 +479,6 @@ class MainActivity : Activity() {
         contentContainer.addView(libraryContainer)
         contentContainer.addView(settingsContainer)
 
-        // --- НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ ---
         bottomNavBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -525,7 +530,6 @@ class MainActivity : Activity() {
         window.statusBarColor = t.bg
         window.navigationBarColor = t.navBg
 
-        // Плеер
         bookTitleView.setTextColor(t.textPrimary)
         coverView.setBackgroundColor(t.surface)
         speedBtn.setTextColor(t.textPrimary)
@@ -543,17 +547,14 @@ class MainActivity : Activity() {
         seekBar.thumbTintList = ColorStateList.valueOf(t.accentBg)
         updateTimerButton()
 
-        // Библиотека
         libraryStatusView.setTextColor(t.textSecondary)
 
-        // Настройки
         settingsTitleView.setTextColor(t.textPrimary)
         themeSectionLabel.setTextColor(t.textSecondary)
         badgeSectionLabel.setTextColor(t.textSecondary)
         rebuildThemeButtons()
         rebuildBadgeButtons()
 
-        // Нижняя панель
         bottomNavBar.setBackgroundColor(t.navBg)
         updateNavColors()
     }
@@ -907,7 +908,7 @@ class MainActivity : Activity() {
             .apply()
 
         showTab(0)
-        loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true)
+        loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true, showLoadingHint = true)
     }
 
     private fun saveCurrentProgress() {
@@ -915,22 +916,26 @@ class MainActivity : Activity() {
         if (player.mediaItemCount == 0) return
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val currentUri = prefs.getString("folder_uri", null) ?: return
-        prefs.edit()
+        val bookTitle = player.currentMediaItem?.mediaMetadata?.artist?.toString()
+        val editor = prefs.edit()
             .putInt("last_index", player.currentMediaItemIndex)
             .putLong("last_pos", player.currentPosition)
             .putInt("idx_$currentUri", player.currentMediaItemIndex)
             .putLong("pos_$currentUri", player.currentPosition)
-            .apply()
+        if (!bookTitle.isNullOrEmpty()) {
+            editor.putString("last_book_title", bookTitle)
+        }
+        editor.apply()
     }
 
     private fun restoreSavedBookIfEmpty() {
         val player = controller ?: return
-        if (player.mediaItemCount > 0) return
+        if (player.mediaItemCount > 0 || isLoadingFolder) return
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val uriStr = prefs.getString("folder_uri", null) ?: return
         val index = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
         val pos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
-        loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false)
+        loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false, showLoadingHint = false)
     }
 
     private fun collectAudioFiles(dir: DocumentFile, out: MutableList<DocumentFile>) {
@@ -947,41 +952,61 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadFolder(treeUri: Uri, startIndex: Int, startPos: Long, autoPlay: Boolean) {
-        chapterBtn.text = "Загружаю главы..."
+    private fun loadFolder(
+        treeUri: Uri,
+        startIndex: Int,
+        startPos: Long,
+        autoPlay: Boolean,
+        showLoadingHint: Boolean
+    ) {
+        if (isLoadingFolder) return
+        isLoadingFolder = true
+        if (showLoadingHint) {
+            chapterBtn.text = "Загружаю главы..."
+        }
+
         Thread {
-            val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
-            val bookName = dir.name ?: "Аудиокнига"
-            val files = mutableListOf<DocumentFile>()
-            collectAudioFiles(dir, files)
+            try {
+                val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
+                val bookName = dir.name ?: "Аудиокнига"
+                val files = mutableListOf<DocumentFile>()
+                collectAudioFiles(dir, files)
 
-            runOnUiThread {
-                bookTitleView.text = bookName
-                if (files.isEmpty()) {
-                    chapterBtn.text = "В этой папке нет аудиофайлов"
-                    return@runOnUiThread
-                }
+                runOnUiThread {
+                    bookTitleView.text = bookName
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("last_book_title", bookName)
+                        .apply()
 
-                val items = files.map { file ->
-                    val title = file.name?.substringBeforeLast('.') ?: "Глава"
-                    MediaItem.Builder()
-                        .setUri(file.uri)
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(title)
-                                .setArtist(bookName)
-                                .build()
-                        )
-                        .build()
-                }
+                    if (files.isEmpty()) {
+                        chapterBtn.text = "В этой папке нет аудиофайлов"
+                        return@runOnUiThread
+                    }
 
-                val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-                controller?.apply {
-                    setMediaItems(items, safeIndex, startPos)
-                    prepare()
-                    if (autoPlay) play()
+                    val items = files.map { file ->
+                        val title = file.name?.substringBeforeLast('.') ?: "Глава"
+                        MediaItem.Builder()
+                            .setUri(file.uri)
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(title)
+                                    .setArtist(bookName)
+                                    .build()
+                            )
+                            .build()
+                    }
+
+                    val safeIndex = startIndex.coerceIn(0, items.lastIndex)
+                    controller?.apply {
+                        setMediaItems(items, safeIndex, startPos)
+                        prepare()
+                        if (autoPlay) play()
+                    }
+                    updateUI()
                 }
-                updateUI()
+            } finally {
+                isLoadingFolder = false
             }
         }.start()
     }
