@@ -1,7 +1,6 @@
 package com.audiobook.player
 
 import android.content.Context
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -15,56 +14,10 @@ data class M4bChapter(
 class M4bChaptersReader(private val context: Context) {
 
     fun readChapters(uri: Uri): List<M4bChapter> {
-        val fromRetriever = readFromMediaMetadataRetriever(uri)
-        if (fromRetriever.size > 1) {
-            return fromRetriever
-        }
-        val fromAtoms = readFromChplAtom(uri)
-        if (fromAtoms.size > 1) {
-            return fromAtoms
-        }
-        return emptyList()
-    }
-
-    private fun readFromMediaMetadataRetriever(uri: Uri): List<M4bChapter> {
-        val retriever = MediaMetadataRetriever()
-        return try {
-            retriever.setDataSource(context, uri)
-            val hasChapters = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_CHAPTERS)
-            if (hasChapters != "yes" && hasChapters != "true") {
-                return emptyList()
-            }
-            val result = mutableListOf<M4bChapter>()
-            var idx = 0
-            while (idx < 500) {
-                val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CHAPTER_NAME, idx)
-                    ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE, idx)
-                val startStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CHAPTER_START_TIME, idx)
-                if (startStr == null && title == null) break
-
-                val startMs = startStr?.toLongOrNull() ?: 0L
-                val cleanTitle = title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Глава ${idx + 1}"
-                result.add(M4bChapter(idx, cleanTitle, startMs.coerceAtLeast(0L)))
-                idx++
-            }
-            result.distinctBy { it.startMs }.sortedBy { it.startMs }
-                .mapIndexed { i, ch -> ch.copy(index = i) }
-        } catch (_: Exception) {
-            emptyList()
-        } catch (_: NoSuchMethodError) {
-            emptyList()
-        } finally {
-            try {
-                retriever.release()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    private fun readFromChplAtom(uri: Uri): List<M4bChapter> {
         return try {
             context.contentResolver.openInputStream(uri)?.use { stream ->
-                scanStreamForChpl(stream)
+                val chapters = scanStreamForChpl(stream)
+                if (chapters.size > 1) chapters else emptyList()
             } ?: emptyList()
         } catch (_: Exception) {
             emptyList()
@@ -75,7 +28,7 @@ class M4bChaptersReader(private val context: Context) {
         val buffer = ByteArray(64 * 1024)
         var carry = ByteArray(0)
         var totalRead = 0
-        val maxScanBytes = 24 * 1024 * 1024
+        val maxScanBytes = 32 * 1024 * 1024
 
         while (totalRead < maxScanBytes) {
             val read = input.read(buffer)
@@ -91,7 +44,8 @@ class M4bChaptersReader(private val context: Context) {
                 val atomStart = chplPos - 4
                 val atomSize = readUint32BE(combined, atomStart).toInt()
                 if (atomSize in 16..(2 * 1024 * 1024) && atomStart + atomSize <= combined.size) {
-                    return parseChplPayload(combined, atomStart + 8, atomSize - 8)
+                    val parsed = parseChplPayload(combined, atomStart + 8, atomSize - 8)
+                    if (parsed.size > 1) return parsed
                 }
             }
 
@@ -108,7 +62,7 @@ class M4bChaptersReader(private val context: Context) {
             val version = data[pos].toInt() and 0xFF
             pos += 4 // version (1 byte) + flags (3 bytes)
             if (version == 1) {
-                pos += 4 // reserved / timescale padding in Nero chpl
+                pos += 4
             }
             if (pos >= offset + length) return emptyList()
             val count = data[pos].toInt() and 0xFF
@@ -157,7 +111,6 @@ class M4bChaptersReader(private val context: Context) {
     }
 
     private fun readInt64BE(buf: ByteArray, off: Int): Long {
-        val bb = ByteBuffer.wrap(buf, off, 8)
-        return bb.long
+        return ByteBuffer.wrap(buf, off, 8).long
     }
 }
