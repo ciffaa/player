@@ -136,6 +136,9 @@ class MainActivity : Activity() {
     private var currentTab = 0
 
     private lateinit var bookmarksManager: BookmarksManager
+    private lateinit var m4bChaptersReader: M4bChaptersReader
+    private var activeM4bChapters: List<M4bChapter> = emptyList()
+    private var lastLoadedChapterUri: String? = null
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -207,6 +210,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         bookmarksManager = BookmarksManager(this)
+        m4bChaptersReader = M4bChaptersReader(this)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -680,11 +684,56 @@ class MainActivity : Activity() {
         setContentView(rootLayout)
     }
 
+    private fun refreshM4bChaptersIfNeeded(player: Player) {
+        if (player.mediaItemCount != 1) {
+            activeM4bChapters = emptyList()
+            lastLoadedChapterUri = null
+            return
+        }
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri ?: return
+        val uriStr = uri.toString()
+        if (uriStr == lastLoadedChapterUri) return
+        lastLoadedChapterUri = uriStr
+
+        val lowerPath = uriStr.lowercase()
+        if (!lowerPath.contains(".m4b") && !lowerPath.contains(".m4a")) {
+            activeM4bChapters = emptyList()
+            return
+        }
+
+        Thread {
+            val found = m4bChaptersReader.readChapters(uri)
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed && uriStr == lastLoadedChapterUri) {
+                    activeM4bChapters = found
+                    updateUI()
+                }
+            }
+        }.start()
+    }
+
+    private fun currentM4bChapter(posMs: Long): M4bChapter? {
+        if (activeM4bChapters.isEmpty()) return null
+        var current = activeM4bChapters.first()
+        for (ch in activeM4bChapters) {
+            if (posMs >= ch.startMs) {
+                current = ch
+            } else {
+                break
+            }
+        }
+        return current
+    }
+
     private fun showHelpDialog() {
         val guideText = """
             Закладки (🔖):
             • Обычное нажатие на 🔖 — открывает список закладок текущей книги. Внутри есть кнопка «+ Добавить закладку». Нажатие по закладке перематывает на нужный момент, долгое нажатие — удаляет её.
             • Долгое нажатие на 🔖 — сразу открывает окно создания закладки на текущем таймкоде с полем для заметки.
+
+            Главы и M4B:
+            • Нажатие на название главы открывает список глав. Для книг одним файлом .m4b автоматически считываются встроенные главы по таймкодам.
 
             Обложки:
             • Если обложки нет в аудиофайлах, плеер сам ищет картинку в папке книги, а затем в интернете.
@@ -715,9 +764,11 @@ class MainActivity : Activity() {
         }
         val player = controller
         val chapIdx = player?.currentMediaItemIndex ?: prefs.getInt("last_index", 0)
-        val chapTitle = player?.currentMediaItem?.mediaMetadata?.title?.toString()
-            ?: "Глава ${chapIdx + 1}"
         val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: prefs.getLong("last_pos", 0L)
+        val m4bCh = currentM4bChapter(posMs)
+        val chapTitle = m4bCh?.title
+            ?: player?.currentMediaItem?.mediaMetadata?.title?.toString()
+            ?: "Глава ${chapIdx + 1}"
         val bookTitle = bookTitleView.text?.toString() ?: "Аудиокнига"
 
         bookmarksManager.showBookmarksDialog(
@@ -748,9 +799,11 @@ class MainActivity : Activity() {
         }
         val player = controller
         val chapIdx = player?.currentMediaItemIndex ?: prefs.getInt("last_index", 0)
-        val chapTitle = player?.currentMediaItem?.mediaMetadata?.title?.toString()
-            ?: "Глава ${chapIdx + 1}"
         val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: prefs.getLong("last_pos", 0L)
+        val m4bCh = currentM4bChapter(posMs)
+        val chapTitle = m4bCh?.title
+            ?: player?.currentMediaItem?.mediaMetadata?.title?.toString()
+            ?: "Глава ${chapIdx + 1}"
 
         bookmarksManager.showAddBookmarkDialog(
             bookUri = bookUri,
@@ -1493,6 +1546,26 @@ class MainActivity : Activity() {
         val count = player.mediaItemCount
         if (count == 0) return
 
+        if (count == 1 && activeM4bChapters.size > 1) {
+            val currentCh = currentM4bChapter(player.currentPosition.coerceAtLeast(0L))
+            val labels = Array(activeM4bChapters.size) { i ->
+                val ch = activeM4bChapters[i]
+                val prefix = if (currentCh?.index == ch.index) "▶ " else ""
+                "$prefix${ch.title} (${formatTime(ch.startMs)})"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Главы M4B (${activeM4bChapters.size})")
+                .setItems(labels) { _, which ->
+                    val target = activeM4bChapters[which]
+                    player.seekTo(0, target.startMs)
+                    player.play()
+                    saveCurrentProgress()
+                    updateUI()
+                }
+                .show()
+            return
+        }
+
         val titles = Array(count) { i ->
             val title = player.getMediaItemAt(i).mediaMetadata.title?.toString() ?: "Глава ${i + 1}"
             if (i == player.currentMediaItemIndex) "▶ $title" else title
@@ -1684,6 +1757,8 @@ class MainActivity : Activity() {
             .putLong("last_pos", savedPos)
             .apply()
 
+        activeM4bChapters = emptyList()
+        lastLoadedChapterUri = null
         lastArtworkSize = -1
         lastCoverBookUri = null
         showTab(0)
@@ -1796,11 +1871,16 @@ class MainActivity : Activity() {
 
     private fun updateUI() {
         val player = controller ?: return
+        refreshM4bChaptersIfNeeded(player)
+
         val itemMeta = player.currentMediaItem?.mediaMetadata
         val bookTitle = itemMeta?.artist?.toString() ?: "Аудиокнига"
         if (itemMeta != null) {
             bookTitleView.text = bookTitle
-            val chapterName = itemMeta.title ?: "Глава ${player.currentMediaItemIndex + 1}"
+            val m4bCh = currentM4bChapter(player.currentPosition.coerceAtLeast(0L))
+            val chapterName = m4bCh?.title
+                ?: itemMeta.title?.toString()
+                ?: "Глава ${player.currentMediaItemIndex + 1}"
             chapterBtn.text = "☰  $chapterName"
         }
 
@@ -1855,6 +1935,10 @@ class MainActivity : Activity() {
             seekBar.progress = pos.toInt()
             elapsedTimeView.text = formatTime(pos)
             remainingTimeView.text = "-${formatTime((dur - pos).coerceAtLeast(0))}"
+        }
+        val m4bCh = currentM4bChapter(pos)
+        if (m4bCh != null) {
+            chapterBtn.text = "☰  ${m4bCh.title}"
         }
     }
 
