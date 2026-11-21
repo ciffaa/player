@@ -759,6 +759,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        ContextCompat.startForegroundService(this, Intent(this, PlaybackService::class.java))
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture?.addListener({
@@ -998,10 +999,14 @@ class MainActivity : Activity() {
                     }
 
                     val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-                    controller?.apply {
-                        setMediaItems(items, safeIndex, startPos)
-                        prepare()
-                        if (autoPlay) play()
+                    val activeController = controller
+                    if (activeController != null) {
+                        activeController.setMediaItems(items, safeIndex, startPos)
+                        activeController.prepare()
+                        if (autoPlay) {
+                            activeController.playWhenReady = true
+                            activeController.play()
+                        }
                     }
                     updateUI()
                 }
