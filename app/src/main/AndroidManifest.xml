@@ -1,89 +1,110 @@
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+package com.audiobook.player
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+import android.Manifest
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.PorterDuff
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
+import android.view.ViewOutlineProvider
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
-    <application
-        android:allowBackup="true"
-        android:icon="@drawable/ic_launcher_adaptive"
-        android:label="Аудиокниги"
-        android:roundIcon="@drawable/ic_launcher_adaptive"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+data class BookEntry(
+    val title: String,
+    val subtitle: String,
+    val uriString: String
+)
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="false"
-            android:launchMode="singleTop" />
+data class AppTheme(
+    val id: String,
+    val name: String,
+    val bg: Int,
+    val surface: Int,
+    val activeCard: Int,
+    val textPrimary: Int,
+    val textSecondary: Int,
+    val accentBg: Int,
+    val accentText: Int,
+    val navBg: Int,
+    val navActive: Int,
+    val navInactive: Int,
+    val timerActive: Int
+)
 
-        <activity-alias
-            android:name=".MainActivityAliasV1"
-            android:enabled="true"
-            android:exported="true"
-            android:icon="@drawable/ic_badge_v1"
-            android:roundIcon="@drawable/ic_badge_v1"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
+data class BadgeOption(
+    val id: String,
+    val drawableRes: Int
+)
 
-        <activity-alias
-            android:name=".MainActivityAliasV2"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@drawable/ic_badge_v2"
-            android:roundIcon="@drawable/ic_badge_v2"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
+class MainActivity : Activity() {
 
-        <service
-            android:name=".PlaybackService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
-            </intent-filter>
-        </service>
-
-        <receiver
-            android:name=".GridWidgetProvider"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.audiobook.player.ACTION_PLAY_PAUSE" />
-                <action android:name="com.audiobook.player.ACTION_FORWARD" />
-                <action android:name="com.audiobook.player.ACTION_REWIND" />
-                <action android:name="com.audiobook.player.ACTION_UPDATE_WIDGET" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/widget_grid_info" />
-        </receiver>
-
-        <receiver
-            android:name=".BarWidgetProvider"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.audiobook.player.ACTION_PLAY_PAUSE" />
-                <action android:name="com.audiobook.player.ACTION_FORWARD" />
-                <action android:name="com.audiobook.player.ACTION_REWIND" />
-                <action android:name="com.audiobook.player.ACTION_UPDATE_WIDGET" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/widget_bar_info" />
-        </receiver>
-
-    </application>
-</manifest>
+    private val themes = listOf(
+        AppTheme(
+            id = "dark",
+            name = "Тёмная",
+            bg = Color.parseColor("#000000"),
+            surface = Color.parseColor("#16161A"),
+            activeCard = Color.parseColor("#263238"),
+            textPrimary = Color.parseColor("#FFFFFF"),
+            textSecondary = Color.parseColor("#9090A0"),
+            accentBg = Color.parseColor("#E0E0E0"),
+            accentText = Color.parseColor("#000000"),
+            navBg = Color.parseColor("#121216"),
+            navActive = Color.parseColor("#FFFFFF"),
+            navInactive = Color.parseColor("#6E6E7A"),
+            timerActive = Color.parseColor("#80D8FF")
+        ),
+        AppTheme(
+            id = "light",
+            name = "Светлая",
+            bg = Color.parseColor("#F4F5F7"),
+            surface = Color.parseColor("#FFFFFF"),
+            activeCard = Color.parseColor("#E3F2FD"),
+            textPrimary = Color.parseColor("#121216"),
+            textSecondary = Color.parseColor("#666672"),
+            accentBg = Color.parseColor("#1A1A20"),
+            accentText = Color.parseColor("#FFFFFF"),
+            navBg = Color.parseColor("#FFFFFF"),
+            navActive = Color.parseColor("#121216"),
+            navInactive = Color.parseColor("#8E8E98"),
+            timerActive = Color.parseColor("#
