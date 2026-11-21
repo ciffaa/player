@@ -37,6 +37,10 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 data class BookEntry(
     val title: String,
@@ -241,6 +245,12 @@ class MainActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener {
+                val title = text?.toString()?.trim() ?: ""
+                if (title.isNotEmpty() && title != "Книга не выбрана" && title != "Аудиокнига") {
+                    showBookInfoDialog(title, forceRefresh = false)
+                }
+            }
         }
 
         val coverWrapper = LinearLayout(this).apply {
@@ -522,6 +532,115 @@ class MainActivity : Activity() {
         rootLayout.addView(bottomNavBar)
 
         setContentView(rootLayout)
+    }
+
+    private fun showBookInfoDialog(bookTitle: String, forceRefresh: Boolean) {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val cacheKey = "book_info_$bookTitle"
+        val cached = prefs.getString(cacheKey, null)
+
+        if (!forceRefresh && !cached.isNullOrEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(bookTitle)
+                .setMessage(cached)
+                .setPositiveButton("Закрыть", null)
+                .setNeutralButton("Обновить") { _, _ ->
+                    showBookInfoDialog(bookTitle, forceRefresh = true)
+                }
+                .show()
+            return
+        }
+
+        val loadingDialog = AlertDialog.Builder(this)
+            .setTitle(bookTitle)
+            .setMessage("Ищу информацию о книге...")
+            .setNegativeButton("Отмена", null)
+            .show()
+
+        Thread {
+            val result = fetchFromGoogleBooks(bookTitle) ?: fetchFromWikipedia(bookTitle)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                loadingDialog.dismiss()
+
+                if (result != null) {
+                    prefs.edit().putString(cacheKey, result).apply()
+                    AlertDialog.Builder(this)
+                        .setTitle(bookTitle)
+                        .setMessage(result)
+                        .setPositiveButton("Закрыть", null)
+                        .setNeutralButton("Обновить") { _, _ ->
+                            showBookInfoDialog(bookTitle, forceRefresh = true)
+                        }
+                        .show()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle(bookTitle)
+                        .setMessage("Не удалось найти описание. Проверьте подключение к интернету или название папки.")
+                        .setPositiveButton("Закрыть", null)
+                        .setNeutralButton("Повторить") { _, _ ->
+                            showBookInfoDialog(bookTitle, forceRefresh = true)
+                        }
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun fetchFromGoogleBooks(query: String): String? {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&langRestrict=ru&maxResults=1")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 7000
+                readTimeout = 7000
+                requestMethod = "GET"
+            }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val items = JSONObject(body).optJSONArray("items") ?: return null
+            if (items.length() == 0) return null
+
+            val info = items.getJSONObject(0).optJSONObject("volumeInfo") ?: return null
+            val authorsArr = info.optJSONArray("authors")
+            val authors = if (authorsArr != null && authorsArr.length() > 0) {
+                (0 until authorsArr.length()).joinToString(", ") { authorsArr.getString(it) }
+            } else ""
+            val year = info.optString("publishedDate", "").take(4)
+            val description = info.optString("description", "")
+                .replace(Regex("<[^>]*>"), "")
+                .trim()
+
+            if (description.isEmpty() && authors.isEmpty()) return null
+
+            buildString {
+                if (authors.isNotEmpty()) append("Автор: $authors\n")
+                if (year.isNotEmpty()) append("Год: $year\n")
+                if (isNotEmpty() && description.isNotEmpty()) append("\n")
+                if (description.isNotEmpty()) append(description)
+            }.trim()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchFromWikipedia(query: String): String? {
+        return try {
+            val encoded = URLEncoder.encode(query.replace(" ", "_"), "UTF-8")
+            val url = URL("https://ru.wikipedia.org/api/rest_v1/page/summary/$encoded")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 7000
+                readTimeout = 7000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "AudiobookPlayerApp/1.0")
+            }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val extract = JSONObject(body).optString("extract", "").trim()
+            extract.ifEmpty { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun applyTheme() {
