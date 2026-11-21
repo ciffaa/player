@@ -6,7 +6,9 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.widget.RemoteViews
+import java.io.File
 
 const val ACTION_PLAY_PAUSE = "com.audiobook.player.ACTION_PLAY_PAUSE"
 const val ACTION_FORWARD = "com.audiobook.player.ACTION_FORWARD"
@@ -22,6 +24,18 @@ private fun dispatchToService(context: Context, action: String?) {
         context.startService(serviceIntent)
     } catch (_: Exception) {
     }
+}
+
+private fun applyCover(context: Context, views: RemoteViews) {
+    val coverFile = File(context.cacheDir, "widget_cover.jpg")
+    if (coverFile.exists()) {
+        val bmp = BitmapFactory.decodeFile(coverFile.absolutePath)
+        if (bmp != null) {
+            views.setImageViewBitmap(R.id.widget_cover, bmp)
+            return
+        }
+    }
+    views.setImageViewResource(R.id.widget_cover, android.R.drawable.ic_media_play)
 }
 
 class GridWidgetProvider : AppWidgetProvider() {
@@ -67,7 +81,12 @@ class BarWidgetProvider : AppWidgetProvider() {
 }
 
 private fun updateGridWidget(context: Context, appWidgetManager: AppWidgetManager, widgetId: Int) {
+    val prefs = context.getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+    val isPlaying = prefs.getBoolean("is_playing", false)
+
     val views = RemoteViews(context.packageName, R.layout.widget_grid)
+    views.setImageViewResource(R.id.widget_play_pause, if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+    applyCover(context, views)
 
     views.setOnClickPendingIntent(
         R.id.widget_play_pause,
@@ -117,10 +136,15 @@ private fun updateGridWidget(context: Context, appWidgetManager: AppWidgetManage
 
 private fun updateBarWidget(context: Context, appWidgetManager: AppWidgetManager, widgetId: Int) {
     val prefs = context.getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+    val isPlaying = prefs.getBoolean("is_playing", false)
     val bookTitle = prefs.getString("last_book_title", "Аудиокниги") ?: "Аудиокниги"
+    val chapterTitle = prefs.getString("last_chapter_title", "Нажмите, чтобы открыть") ?: "Нажмите, чтобы открыть"
 
     val views = RemoteViews(context.packageName, R.layout.widget_bar)
     views.setTextViewText(R.id.widget_book, bookTitle)
+    views.setTextViewText(R.id.widget_chapter, chapterTitle)
+    views.setImageViewResource(R.id.widget_play_pause, if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+    applyCover(context, views)
 
     views.setOnClickPendingIntent(
         R.id.widget_play_pause,
