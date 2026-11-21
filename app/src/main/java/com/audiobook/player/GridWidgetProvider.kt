@@ -1,0 +1,86 @@
+package com.audiobook.player
+
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.widget.RemoteViews
+import androidx.core.content.ContextCompat
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+
+class GridWidgetProvider : AppWidgetProvider() {
+
+    override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+        for (id in appWidgetIds) {
+            updateWidget(context, appWidgetManager, id)
+        }
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        super.onReceive(context, intent)
+        when (intent.action) {
+            ACTION_TOGGLE_PLAY -> {
+                val serviceIntent = Intent(context, PlaybackService::class.java)
+                ContextCompat.startForegroundService(context, serviceIntent)
+                val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+                val future = MediaController.Builder(context, token).buildAsync()
+                future.addListener({
+                    try {
+                        val controller = future.get()
+                        if (controller.isPlaying) {
+                            controller.pause()
+                        } else {
+                            controller.play()
+                        }
+                        MediaController.releaseFuture(future)
+                    } catch (_: Exception) {
+                    }
+                }, ContextCompat.getMainExecutor(context))
+            }
+            "com.audiobook.player.ACTION_UPDATE_WIDGET" -> {
+                val mgr = AppWidgetManager.getInstance(context)
+                val ids = mgr.getAppWidgetIds(ComponentName(context, GridWidgetProvider::class.java))
+                onUpdate(context, mgr, ids)
+            }
+        }
+    }
+
+    private fun updateWidget(context: Context, appWidgetManager: AppWidgetManager, widgetId: Int) {
+        val prefs = context.getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val bookTitle = prefs.getString("last_book_title", "Аудиокниги") ?: "Аудиокниги"
+
+        val views = RemoteViews(context.packageName, R.layout.widget_grid)
+        views.setTextViewText(R.id.widget_title, bookTitle)
+
+        val toggleIntent = Intent(context, GridWidgetProvider::class.java).apply {
+            action = ACTION_TOGGLE_PLAY
+        }
+        val pendingToggle = PendingIntent.getBroadcast(
+            context,
+            10,
+            toggleIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        views.setOnClickPendingIntent(R.id.widget_play_btn, pendingToggle)
+
+        val openAppIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (openAppIntent != null) {
+            val pendingOpen = PendingIntent.getActivity(
+                context,
+                11,
+                openAppIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            views.setOnClickPendingIntent(R.id.widget_root, pendingOpen)
+        }
+
+        appWidgetManager.updateAppWidget(widgetId, views)
+    }
+
+    companion object {
+        const val ACTION_TOGGLE_PLAY = "com.audiobook.player.ACTION_TOGGLE_PLAY"
+    }
+}
