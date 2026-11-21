@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Outline
@@ -31,6 +32,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.common.MediaItem
@@ -41,6 +43,8 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -173,6 +177,7 @@ class MainActivity : Activity() {
     private lateinit var aiKeyStatus: TextView
 
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
+    private val imageExt = listOf(".jpg", ".jpeg", ".png", ".webp")
     private val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     private var currentSpeedIndex = 0
 
@@ -180,6 +185,8 @@ class MainActivity : Activity() {
     private var isSeeking = false
     private var isLoadingFolder = false
     private var lastArtworkSize = -1
+    private var lastCoverBookUri: String? = null
+    private val attemptedCoverSearch = mutableSetOf<String>()
     private var sleepTimerEndMs = 0L
 
     private val updateProgressTask = object : Runnable {
@@ -281,6 +288,7 @@ class MainActivity : Activity() {
             }
             clipToOutline = true
             layoutParams = LinearLayout.LayoutParams(coverSize, coverSize)
+            setOnClickListener { showCoverMenu() }
         }
         coverWrapper.addView(coverView)
 
@@ -580,6 +588,241 @@ class MainActivity : Activity() {
         rootLayout.addView(bottomNavBar)
 
         setContentView(rootLayout)
+    }
+
+    private fun getCoverFile(bookUriStr: String, custom: Boolean): File {
+        val dir = File(filesDir, "covers").apply { if (!exists()) mkdirs() }
+        val prefix = if (custom) "custom_" else "auto_"
+        return File(dir, "$prefix${bookUriStr.hashCode()}.jpg")
+    }
+
+    private fun saveBitmapToFile(bmp: Bitmap, target: File, maxSize: Int) {
+        val w = bmp.width
+        val h = bmp.height
+        val scale = maxSize.toFloat() / maxOf(w, h).coerceAtLeast(1)
+        val outBmp = if (scale < 1f) {
+            Bitmap.createScaledBitmap(bmp, (w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1), true)
+        } else {
+            bmp
+        }
+        FileOutputStream(target).use { out ->
+            outBmp.compress(Bitmap.CompressFormat.JPEG, 88, out)
+        }
+        if (outBmp != bmp) outBmp.recycle()
+    }
+
+    private fun syncWidgetCover(bmp: Bitmap) {
+        try {
+            val coverFile = File(cacheDir, "widget_cover.jpg")
+            saveBitmapToFile(bmp, coverFile, 256)
+            PlaybackService.notifyWidgets(this)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun showCoverMenu() {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val bookUri = prefs.getString("folder_uri", null) ?: return
+        val bookTitle = bookTitleView.text?.toString()?.trim() ?: ""
+
+        val options = arrayOf(
+            "Выбрать из галереи",
+            "Найти в интернете",
+            "Сбросить обложку"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Обложка книги")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "image/*"
+                        }
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, 201)
+                    }
+                    1 -> {
+                        if (bookTitle.isNotEmpty() && bookTitle != "Книга не выбрана") {
+                            Toast.makeText(this, "Ищу обложку...", Toast.LENGTH_SHORT).show()
+                            searchOnlineCover(bookUri, bookTitle, asCustom = true)
+                        }
+                    }
+                    2 -> {
+                        getCoverFile(bookUri, custom = true).delete()
+                        getCoverFile(bookUri, custom = false).delete()
+                        attemptedCoverSearch.remove(bookUri)
+                        lastArtworkSize = -1
+                        lastCoverBookUri = null
+                        updateUI()
+                        Toast.makeText(this, "Обложка сброшена", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun loadFallbackCoverAsync(bookUriStr: String, bookTitle: String) {
+        Thread {
+            val autoFile = getCoverFile(bookUriStr, custom = false)
+            if (autoFile.exists()) {
+                val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
+                if (bmp != null) {
+                    syncWidgetCover(bmp)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
+                    }
+                    return@Thread
+                }
+            }
+
+            // 1. Поиск локальной картинки в папке с книгой
+            val folderBmp = findCoverInFolder(Uri.parse(bookUriStr))
+            if (folderBmp != null) {
+                saveBitmapToFile(folderBmp, autoFile, 600)
+                syncWidgetCover(folderBmp)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) coverView.setImageBitmap(folderBmp)
+                }
+                return@Thread
+            }
+
+            // 2. Поиск в интернете (один раз за сеанс для книги)
+            if (attemptedCoverSearch.add(bookUriStr)) {
+                searchOnlineCoverInternal(bookUriStr, bookTitle, asCustom = false, notifyIfNotFound = false)
+            }
+        }.start()
+    }
+
+    private fun searchOnlineCover(bookUriStr: String, bookTitle: String, asCustom: Boolean) {
+        Thread {
+            searchOnlineCoverInternal(bookUriStr, bookTitle, asCustom = asCustom, notifyIfNotFound = true)
+        }.start()
+    }
+
+    private fun searchOnlineCoverInternal(
+        bookUriStr: String,
+        bookTitle: String,
+        asCustom: Boolean,
+        notifyIfNotFound: Boolean
+    ) {
+        val cleanQuery = normalizeQuery(bookTitle)
+        val bmp = fetchCoverFromGoogleBooks(cleanQuery) ?: fetchCoverFromItunes(cleanQuery)
+        if (bmp != null) {
+            val target = getCoverFile(bookUriStr, custom = asCustom)
+            saveBitmapToFile(bmp, target, 600)
+            syncWidgetCover(bmp)
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    coverView.setImageBitmap(bmp)
+                    if (notifyIfNotFound) {
+                        Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } else if (notifyIfNotFound) {
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    Toast.makeText(this, "Обложка не найдена", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun findCoverInFolder(treeUri: Uri): Bitmap? {
+        return try {
+            val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return null
+            val images = dir.listFiles().filter { file ->
+                val name = file.name?.lowercase() ?: ""
+                file.isFile && imageExt.any { name.endsWith(it) }
+            }
+            if (images.isEmpty()) return null
+
+            val preferred = images.firstOrNull {
+                val n = it.name?.lowercase() ?: ""
+                n.contains("cover") || n.contains("folder") || n.contains("front")
+            } ?: images.first()
+
+            contentResolver.openInputStream(preferred.uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun downloadBitmap(imageUrl: String): Bitmap? {
+        return try {
+            val conn = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                requestMethod = "GET"
+            }
+            if (conn.responseCode != 200) return null
+            conn.inputStream.use { BitmapFactory.decodeStream(it) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchCoverFromGoogleBooks(query: String): Bitmap? {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&maxResults=5")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                requestMethod = "GET"
+            }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val items = JSONObject(body).optJSONArray("items") ?: return null
+            for (i in 0 until items.length()) {
+                val links = items.getJSONObject(i)
+                    .optJSONObject("volumeInfo")
+                    ?.optJSONObject("imageLinks") ?: continue
+                val rawUrl = links.optString("thumbnail", "").ifEmpty {
+                    links.optString("smallThumbnail", "")
+                }
+                if (rawUrl.isNotEmpty()) {
+                    val httpsUrl = rawUrl.replace("http://", "https://")
+                    val bmp = downloadBitmap(httpsUrl)
+                    if (bmp != null) return bmp
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchCoverFromItunes(query: String): Bitmap? {
+        val medias = listOf("audiobook", "ebook")
+        for (media in medias) {
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val url = URL("https://itunes.apple.com/search?term=$encoded&media=$media&limit=3")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    requestMethod = "GET"
+                }
+                if (conn.responseCode != 200) continue
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val results = JSONObject(body).optJSONArray("results") ?: continue
+                for (i in 0 until results.length()) {
+                    val art = results.getJSONObject(i).optString("artworkUrl100", "")
+                    if (art.isNotEmpty()) {
+                        val hiRes = art.replace("100x100bb", "600x600bb")
+                        val bmp = downloadBitmap(hiRes)
+                        if (bmp != null) return bmp
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return null
     }
 
     private fun showApiKeyDialog() {
@@ -1126,279 +1369,24 @@ class MainActivity : Activity() {
             val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
             prefs.edit().putString("library_uri", treeUri.toString()).apply()
             scanLibrary()
-        }
-    }
-
-    private fun scanLibrary() {
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val libUriStr = prefs.getString("library_uri", null)
-        if (libUriStr == null) {
-            libraryStatusView.text = "Нажмите кнопку выше и выберите папку Books"
-            return
-        }
-
-        libraryStatusView.text = "Сканирую библиотеку..."
-        libraryListLayout.removeAllViews()
-
-        Thread {
-            val rootDir = DocumentFile.fromTreeUri(this, Uri.parse(libUriStr))
-            val books = mutableListOf<BookEntry>()
-            if (rootDir != null) {
-                findBooks(rootDir, "", books)
-            }
-            books.sortBy { it.title.lowercase() }
-
-            runOnUiThread {
-                if (books.isEmpty()) {
-                    libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
-                } else {
-                    libraryStatusView.text = "Найдено книг: ${books.size}"
-                    val activeUri = prefs.getString("folder_uri", null)
-                    for (book in books) {
-                        libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
-                    }
-                }
-            }
-        }.start()
-    }
-
-    private fun findBooks(dir: DocumentFile, parentPath: String, out: MutableList<BookEntry>) {
-        val entries = dir.listFiles()
-        val hasAudioHere = entries.any { file ->
-            val name = file.name?.lowercase() ?: ""
-            file.isFile && audioExt.any { name.endsWith(it) }
-        }
-
-        val currentName = dir.name ?: "Книга"
-        if (hasAudioHere) {
-            out.add(BookEntry(currentName, parentPath, dir.uri.toString()))
-        }
-
-        val nextPath = if (parentPath.isEmpty()) currentName else "$parentPath / $currentName"
-        for (entry in entries) {
-            if (entry.isDirectory) {
-                findBooks(entry, nextPath, out)
-            }
-        }
-    }
-
-    private fun createBookCard(book: BookEntry, isActive: Boolean): View {
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
-        val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
-        val t = currentTheme
-
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(if (isActive) t.activeCard else t.surface)
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, dp(10))
-            }
-            setOnClickListener {
-                switchToBook(book.uriString)
-            }
-        }
-
-        val titleTv = TextView(this).apply {
-            text = if (isActive) "▶ ${book.title}" else book.title
-            textSize = 16f
-            setTextColor(t.textPrimary)
-        }
-
-        val progressText = if (savedIdx >= 0) {
-            "Глава ${savedIdx + 1} • ${formatTime(savedPos)}"
-        } else {
-            "Не начата"
-        }
-
-        val subTv = TextView(this).apply {
-            text = if (book.subtitle.isNotEmpty()) "${book.subtitle}  |  $progressText" else progressText
-            textSize = 12f
-            setTextColor(t.textSecondary)
-            setPadding(0, dp(4), 0, 0)
-        }
-
-        card.addView(titleTv)
-        card.addView(subTv)
-        return card
-    }
-
-    private fun switchToBook(bookUriStr: String) {
-        saveCurrentProgress()
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val savedIndex = prefs.getInt("idx_$bookUriStr", 0)
-        val savedPos = prefs.getLong("pos_$bookUriStr", 0L)
-
-        prefs.edit()
-            .putString("folder_uri", bookUriStr)
-            .putInt("last_index", savedIndex)
-            .putLong("last_pos", savedPos)
-            .apply()
-
-        showTab(0)
-        loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true, showLoadingHint = true)
-    }
-
-    private fun saveCurrentProgress() {
-        val player = controller ?: return
-        if (player.mediaItemCount == 0) return
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val currentUri = prefs.getString("folder_uri", null) ?: return
-        val bookTitle = player.currentMediaItem?.mediaMetadata?.artist?.toString()
-        val editor = prefs.edit()
-            .putInt("last_index", player.currentMediaItemIndex)
-            .putLong("last_pos", player.currentPosition)
-            .putInt("idx_$currentUri", player.currentMediaItemIndex)
-            .putLong("pos_$currentUri", player.currentPosition)
-        if (!bookTitle.isNullOrEmpty()) {
-            editor.putString("last_book_title", bookTitle)
-        }
-        editor.apply()
-    }
-
-    private fun restoreSavedBookIfEmpty() {
-        val player = controller ?: return
-        if (player.mediaItemCount > 0 || isLoadingFolder) return
-        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val uriStr = prefs.getString("folder_uri", null) ?: return
-        val index = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
-        val pos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
-        loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false, showLoadingHint = false)
-    }
-
-    private fun collectAudioFiles(dir: DocumentFile, out: MutableList<DocumentFile>) {
-        val entries = dir.listFiles().sortedBy { it.name?.lowercase() }
-        for (entry in entries) {
-            if (entry.isDirectory) {
-                collectAudioFiles(entry, out)
-            } else if (entry.isFile) {
-                val name = entry.name?.lowercase() ?: ""
-                if (audioExt.any { name.endsWith(it) }) {
-                    out.add(entry)
-                }
-            }
-        }
-    }
-
-    private fun loadFolder(
-        treeUri: Uri,
-        startIndex: Int,
-        startPos: Long,
-        autoPlay: Boolean,
-        showLoadingHint: Boolean
-    ) {
-        if (isLoadingFolder) return
-        isLoadingFolder = true
-        if (showLoadingHint) {
-            chapterBtn.text = "Загружаю главы..."
-        }
-
-        Thread {
-            try {
-                val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return@Thread
-                val bookName = dir.name ?: "Аудиокнига"
-                val files = mutableListOf<DocumentFile>()
-                collectAudioFiles(dir, files)
-
-                runOnUiThread {
-                    bookTitleView.text = bookName
-                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-                        .edit()
-                        .putString("last_book_title", bookName)
-                        .apply()
-
-                    if (files.isEmpty()) {
-                        chapterBtn.text = "В этой папке нет аудиофайлов"
-                        return@runOnUiThread
-                    }
-
-                    val items = files.map { file ->
-                        val title = file.name?.substringBeforeLast('.') ?: "Глава"
-                        MediaItem.Builder()
-                            .setUri(file.uri)
-                            .setMediaMetadata(
-                                MediaMetadata.Builder()
-                                    .setTitle(title)
-                                    .setArtist(bookName)
-                                    .build()
-                            )
-                            .build()
-                    }
-
-                    val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-                    val activeController = controller
-                    if (activeController != null) {
-                        activeController.setMediaItems(items, safeIndex, startPos)
-                        activeController.prepare()
-                        if (autoPlay) {
-                            activeController.playWhenReady = true
-                            activeController.play()
-                        }
-                    }
-                    updateUI()
-                }
-            } finally {
-                isLoadingFolder = false
-            }
-        }.start()
-    }
-
-    private fun updateUI() {
-        val player = controller ?: return
-        val itemMeta = player.currentMediaItem?.mediaMetadata
-        if (itemMeta != null) {
-            bookTitleView.text = itemMeta.artist ?: "Аудиокнига"
-            val chapterName = itemMeta.title ?: "Глава ${player.currentMediaItemIndex + 1}"
-            chapterBtn.text = "☰  $chapterName"
-        }
-
-        val artBytes = player.mediaMetadata.artworkData
-        val artSize = artBytes?.size ?: 0
-        if (artSize != lastArtworkSize) {
-            lastArtworkSize = artSize
-            if (artBytes != null) {
-                Thread {
-                    val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+        } else if (requestCode == 201 && resultCode == RESULT_OK) {
+            val imageUri = data?.data ?: return
+            val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            val bookUri = prefs.getString("folder_uri", null) ?: return
+            Thread {
+                try {
+                    val bmp = contentResolver.openInputStream(imageUri)?.use {
+                        BitmapFactory.decodeStream(it)
+                    } ?: return@Thread
+                    val customFile = getCoverFile(bookUri, custom = true)
+                    saveBitmapToFile(bmp, customFile, 600)
+                    syncWidgetCover(bmp)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed && bmp != null) {
+                        if (!isFinishing && !isDestroyed) {
                             coverView.setImageBitmap(bmp)
+                            Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                         }
                     }
-                }.start()
-            } else {
-                coverView.setImageResource(android.R.drawable.ic_media_play)
-            }
-        }
-
-        playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
-        updateProgressOnly()
-    }
-
-    private fun updateProgressOnly() {
-        val player = controller ?: return
-        val dur = player.duration.coerceAtLeast(0)
-        val pos = player.currentPosition.coerceAtLeast(0)
-        if (!isSeeking) {
-            seekBar.max = dur.toInt()
-            seekBar.progress = pos.toInt()
-            elapsedTimeView.text = formatTime(pos)
-            remainingTimeView.text = "-${formatTime((dur - pos).coerceAtLeast(0))}"
-        }
-    }
-
-    private fun formatTime(ms: Long): String {
-        val totalSec = ms / 1000
-        val h = totalSec / 3600
-        val m = (totalSec % 3600) / 60
-        val s = totalSec % 60
-        return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
-        else String.format("%02d:%02d", m, s)
-    }
-}
+                } catch (_: Exception) {
+                }
+            }.start()
