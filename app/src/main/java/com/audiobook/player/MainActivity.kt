@@ -19,11 +19,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -37,6 +39,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -140,6 +143,7 @@ class MainActivity : Activity() {
 
     private lateinit var playerContainer: LinearLayout
     private lateinit var libraryContainer: LinearLayout
+    private lateinit var settingsScrollView: ScrollView
     private lateinit var settingsContainer: LinearLayout
 
     private lateinit var bookTitleView: TextView
@@ -163,6 +167,10 @@ class MainActivity : Activity() {
     private lateinit var themeButtonsContainer: LinearLayout
     private lateinit var badgeSectionLabel: TextView
     private lateinit var badgeButtonsContainer: LinearLayout
+    private lateinit var aiSectionLabel: TextView
+    private lateinit var aiKeyCard: LinearLayout
+    private lateinit var aiKeyTitle: TextView
+    private lateinit var aiKeyStatus: TextView
 
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
     private val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
@@ -442,12 +450,19 @@ class MainActivity : Activity() {
             1f
         ))
 
-        settingsContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        settingsScrollView = ScrollView(this).apply {
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        settingsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
 
@@ -479,15 +494,48 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
+        aiSectionLabel = TextView(this).apply {
+            text = "ИИ-поиск описаний (Gemini API)"
+            textSize = 14f
+            setPadding(dp(4), dp(20), dp(4), dp(10))
+        }
+
+        aiKeyTitle = TextView(this).apply {
+            text = "API-ключ Gemini"
+            textSize = 16f
+        }
+
+        aiKeyStatus = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, dp(4), 0, 0)
+        }
+
+        aiKeyCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
+            setOnClickListener { showApiKeyDialog() }
+            addView(aiKeyTitle)
+            addView(aiKeyStatus)
+        }
+
         settingsContainer.addView(settingsTitleView)
         settingsContainer.addView(themeSectionLabel)
         settingsContainer.addView(themeButtonsContainer)
         settingsContainer.addView(badgeSectionLabel)
         settingsContainer.addView(badgeButtonsContainer)
+        settingsContainer.addView(aiSectionLabel)
+        settingsContainer.addView(aiKeyCard)
+        settingsScrollView.addView(settingsContainer)
 
         contentContainer.addView(playerContainer)
         contentContainer.addView(libraryContainer)
-        contentContainer.addView(settingsContainer)
+        contentContainer.addView(settingsScrollView)
 
         bottomNavBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -534,6 +582,66 @@ class MainActivity : Activity() {
         setContentView(rootLayout)
     }
 
+    private fun showApiKeyDialog() {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val currentKey = prefs.getString("gemini_api_key", "") ?: ""
+
+        val input = EditText(this).apply {
+            setText(currentKey)
+            hint = "AIzaSy..."
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            setSingleLine(true)
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Ключ Gemini API")
+            .setMessage("Хранится только на этом устройстве. Получить бесплатно можно в Google AI Studio.")
+            .setView(container)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val trimmed = input.text.toString().trim()
+                prefs.edit().putString("gemini_api_key", trimmed).apply()
+                updateAiKeyCard()
+            }
+            .setNegativeButton("Отмена", null)
+            .setNeutralButton("Удалить") { _, _ ->
+                prefs.edit().remove("gemini_api_key").apply()
+                updateAiKeyCard()
+            }
+            .show()
+    }
+
+    private fun updateAiKeyCard() {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val key = prefs.getString("gemini_api_key", "")?.trim() ?: ""
+        val t = currentTheme
+
+        aiKeyCard.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            setColor(if (key.isNotEmpty()) t.activeCard else t.surface)
+        }
+        aiKeyTitle.setTextColor(t.textPrimary)
+        aiKeyStatus.setTextColor(t.textSecondary)
+        aiKeyStatus.text = if (key.isNotEmpty()) {
+            "Ключ сохранён (${key.take(6)}••••) — нажмите, чтобы изменить"
+        } else {
+            "Не задан — нажмите, чтобы ввести"
+        }
+    }
+
+    private fun normalizeQuery(raw: String): String {
+        return raw
+            .replace("_", " ")
+            .replace(Regex("([!?,.;:])(?=\\S)"), "$1 ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
     private fun showBookInfoDialog(bookTitle: String, forceRefresh: Boolean) {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val cacheKey = "book_info_$bookTitle"
@@ -557,8 +665,14 @@ class MainActivity : Activity() {
             .setNegativeButton("Отмена", null)
             .show()
 
+        val apiKey = prefs.getString("gemini_api_key", "")?.trim() ?: ""
+        val cleanQuery = normalizeQuery(bookTitle)
+
         Thread {
-            val result = fetchFromGoogleBooks(bookTitle) ?: fetchFromWikipedia(bookTitle)
+            val result = (if (apiKey.isNotEmpty()) fetchFromGemini(bookTitle, apiKey) else null)
+                ?: fetchFromGoogleBooks(cleanQuery)
+                ?: fetchFromWikipedia(cleanQuery)
+
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 loadingDialog.dismiss()
@@ -574,9 +688,14 @@ class MainActivity : Activity() {
                         }
                         .show()
                 } else {
+                    val hint = if (apiKey.isNotEmpty()) {
+                        "Не удалось найти описание. Проверьте интернет, VPN и корректность ключа Gemini в Настройках."
+                    } else {
+                        "Не удалось найти описание. Проверьте подключение к интернету или добавьте ключ Gemini в Настройках."
+                    }
                     AlertDialog.Builder(this)
                         .setTitle(bookTitle)
-                        .setMessage("Не удалось найти описание. Проверьте подключение к интернету или название папки.")
+                        .setMessage(hint)
                         .setPositiveButton("Закрыть", null)
                         .setNeutralButton("Повторить") { _, _ ->
                             showBookInfoDialog(bookTitle, forceRefresh = true)
@@ -587,13 +706,55 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun fetchFromGemini(rawTitle: String, apiKey: String): String? {
+        return try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}")
+            val prompt = "По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или лишние слова). Название: \"$rawTitle\". Напиши на русском языке без Markdown-разметки: Автор, год выхода (если известен) и краткую аннотацию без спойлеров (3-5 предложений). Если не уверен, что это за книга — ответь ровно одним словом: НЕИЗВЕСТНО."
+
+            val payload = JSONObject().put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", prompt))
+                    )
+                )
+            ).toString()
+
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 15000
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            }
+
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val text = JSONObject(body)
+                .optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?.optJSONObject(0)
+                ?.optString("text", "")
+                ?.trim() ?: return null
+
+            if (text.isEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) null else text
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun fetchFromGoogleBooks(query: String): String? {
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&langRestrict=ru&maxResults=1")
+            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&langRestrict=ru&maxResults=5")
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 7000
-                readTimeout = 7000
+                connectTimeout = 8000
+                readTimeout = 8000
                 requestMethod = "GET"
             }
             if (conn.responseCode != 200) return null
@@ -601,24 +762,29 @@ class MainActivity : Activity() {
             val items = JSONObject(body).optJSONArray("items") ?: return null
             if (items.length() == 0) return null
 
-            val info = items.getJSONObject(0).optJSONObject("volumeInfo") ?: return null
-            val authorsArr = info.optJSONArray("authors")
-            val authors = if (authorsArr != null && authorsArr.length() > 0) {
-                (0 until authorsArr.length()).joinToString(", ") { authorsArr.getString(it) }
-            } else ""
-            val year = info.optString("publishedDate", "").take(4)
-            val description = info.optString("description", "")
-                .replace(Regex("<[^>]*>"), "")
-                .trim()
+            var fallback: String? = null
+            for (i in 0 until items.length()) {
+                val info = items.getJSONObject(i).optJSONObject("volumeInfo") ?: continue
+                val authorsArr = info.optJSONArray("authors")
+                val authors = if (authorsArr != null && authorsArr.length() > 0) {
+                    (0 until authorsArr.length()).joinToString(", ") { authorsArr.getString(it) }
+                } else ""
+                val year = info.optString("publishedDate", "").take(4)
+                val description = info.optString("description", "")
+                    .replace(Regex("<[^>]*>"), "")
+                    .trim()
 
-            if (description.isEmpty() && authors.isEmpty()) return null
+                val formatted = buildString {
+                    if (authors.isNotEmpty()) append("Автор: $authors\n")
+                    if (year.isNotEmpty()) append("Год: $year\n")
+                    if (isNotEmpty() && description.isNotEmpty()) append("\n")
+                    if (description.isNotEmpty()) append(description)
+                }.trim()
 
-            buildString {
-                if (authors.isNotEmpty()) append("Автор: $authors\n")
-                if (year.isNotEmpty()) append("Год: $year\n")
-                if (isNotEmpty() && description.isNotEmpty()) append("\n")
-                if (description.isNotEmpty()) append(description)
-            }.trim()
+                if (description.isNotEmpty()) return formatted
+                if (fallback == null && formatted.isNotEmpty()) fallback = formatted
+            }
+            fallback
         } catch (_: Exception) {
             null
         }
@@ -626,17 +792,35 @@ class MainActivity : Activity() {
 
     private fun fetchFromWikipedia(query: String): String? {
         return try {
-            val encoded = URLEncoder.encode(query.replace(" ", "_"), "UTF-8")
-            val url = URL("https://ru.wikipedia.org/api/rest_v1/page/summary/$encoded")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 7000
-                readTimeout = 7000
+            val encodedSearch = URLEncoder.encode(query, "UTF-8")
+            val searchUrl = URL("https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encodedSearch&utf8=&format=json&srlimit=1")
+            val searchConn = (searchUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
                 requestMethod = "GET"
                 setRequestProperty("User-Agent", "AudiobookPlayerApp/1.0")
             }
-            if (conn.responseCode != 200) return null
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val extract = JSONObject(body).optString("extract", "").trim()
+            if (searchConn.responseCode != 200) return null
+            val searchBody = searchConn.inputStream.bufferedReader().use { it.readText() }
+            val results = JSONObject(searchBody)
+                .optJSONObject("query")
+                ?.optJSONArray("search") ?: return null
+            if (results.length() == 0) return null
+
+            val pageTitle = results.getJSONObject(0).optString("title", "").trim()
+            if (pageTitle.isEmpty()) return null
+
+            val encodedTitle = URLEncoder.encode(pageTitle.replace(" ", "_"), "UTF-8")
+            val summaryUrl = URL("https://ru.wikipedia.org/api/rest_v1/page/summary/$encodedTitle")
+            val summaryConn = (summaryUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "AudiobookPlayerApp/1.0")
+            }
+            if (summaryConn.responseCode != 200) return null
+            val summaryBody = summaryConn.inputStream.bufferedReader().use { it.readText() }
+            val extract = JSONObject(summaryBody).optString("extract", "").trim()
             extract.ifEmpty { null }
         } catch (_: Exception) {
             null
@@ -671,8 +855,10 @@ class MainActivity : Activity() {
         settingsTitleView.setTextColor(t.textPrimary)
         themeSectionLabel.setTextColor(t.textSecondary)
         badgeSectionLabel.setTextColor(t.textSecondary)
+        aiSectionLabel.setTextColor(t.textSecondary)
         rebuildThemeButtons()
         rebuildBadgeButtons()
+        updateAiKeyCard()
 
         bottomNavBar.setBackgroundColor(t.navBg)
         updateNavColors()
@@ -808,7 +994,7 @@ class MainActivity : Activity() {
         currentTab = tabIndex
         playerContainer.visibility = if (tabIndex == 0) View.VISIBLE else View.GONE
         libraryContainer.visibility = if (tabIndex == 1) View.VISIBLE else View.GONE
-        settingsContainer.visibility = if (tabIndex == 2) View.VISIBLE else View.GONE
+        settingsScrollView.visibility = if (tabIndex == 2) View.VISIBLE else View.GONE
         updateNavColors()
         if (tabIndex == 1) scanLibrary()
     }
