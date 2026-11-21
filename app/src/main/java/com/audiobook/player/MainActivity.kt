@@ -234,6 +234,28 @@ class MainActivity : Activity() {
         showTab(0)
     }
 
+    private fun applyLauncherIcon(badgeId: String) {
+        try {
+            val aliasV1 = ComponentName(this, "$packageName.MainActivityAliasV1")
+            val aliasV2 = ComponentName(this, "$packageName.MainActivityAliasV2")
+
+            val useV2 = badgeId == "v2"
+            packageManager.setComponentEnabledSetting(
+                aliasV1,
+                if (!useV2) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            packageManager.setComponentEnabledSetting(
+                aliasV2,
+                if (useV2) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun buildUI() {
@@ -704,16 +726,17 @@ class MainActivity : Activity() {
             currentChapterIndex = chapIdx,
             currentChapterTitle = chapTitle,
             currentPositionMs = posMs,
-            theme = currentTheme
-        ) { targetChapter, targetPos ->
-            player?.let { p ->
-                val safeChap = targetChapter.coerceIn(0, (p.mediaItemCount - 1).coerceAtLeast(0))
-                p.seekTo(safeChap, targetPos.coerceAtLeast(0L))
-                p.play()
-                saveCurrentProgress()
-                updateUI()
+            theme = currentTheme,
+            onJumpTo = { targetChapter: Int, targetPos: Long ->
+                player?.let { p ->
+                    val safeChap = targetChapter.coerceIn(0, (p.mediaItemCount - 1).coerceAtLeast(0))
+                    p.seekTo(safeChap, targetPos.coerceAtLeast(0L))
+                    p.play()
+                    saveCurrentProgress()
+                    updateUI()
+                }
             }
-        }
+        )
     }
 
     private fun openAddBookmarkNow() {
@@ -1373,6 +1396,7 @@ class MainActivity : Activity() {
                         .edit()
                         .putString("app_badge", option.id)
                         .apply()
+                    applyLauncherIcon(option.id)
                     rebuildBadgeButtons()
                 }
             }
