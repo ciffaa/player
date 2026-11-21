@@ -78,6 +78,15 @@ class PlaybackService : MediaSessionService() {
         }.build()
     }
 
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        val keepForeground = startInForegroundRequired || ((player?.mediaItemCount ?: 0) > 0)
+        try {
+            super.onUpdateNotification(session, keepForeground)
+        } catch (_: Exception) {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         val exoPlayer = player ?: return START_STICKY
@@ -196,7 +205,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val currentPlayer = player
-        if (currentPlayer == null || !currentPlayer.playWhenReady || currentPlayer.mediaItemCount == 0) {
+        if (currentPlayer == null || currentPlayer.mediaItemCount == 0) {
             stopSelf()
         }
     }
