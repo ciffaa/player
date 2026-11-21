@@ -588,7 +588,7 @@ class MainActivity : Activity() {
 
         val input = EditText(this).apply {
             setText(currentKey)
-            hint = "AIzaSy..."
+            hint = "Вставьте ключ из AI Studio"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             setSingleLine(true)
         }
@@ -636,7 +636,12 @@ class MainActivity : Activity() {
 
     private fun normalizeQuery(raw: String): String {
         return raw
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("\\[[^]]*]"), " ")
             .replace("_", " ")
+            .replace("—", " ")
+            .replace("–", " ")
+            .replace(" - ", " ")
             .replace(Regex("([!?,.;:])(?=\\S)"), "$1 ")
             .replace(Regex("\\s+"), " ")
             .trim()
@@ -669,7 +674,14 @@ class MainActivity : Activity() {
         val cleanQuery = normalizeQuery(bookTitle)
 
         Thread {
-            val result = (if (apiKey.isNotEmpty()) fetchFromGemini(bookTitle, apiKey) else null)
+            var geminiError: String? = null
+            val geminiResult = if (apiKey.isNotEmpty()) {
+                val (res, err) = fetchFromGemini(bookTitle, apiKey)
+                geminiError = err
+                res
+            } else null
+
+            val result = geminiResult
                 ?: fetchFromGoogleBooks(cleanQuery)
                 ?: fetchFromWikipedia(cleanQuery)
 
@@ -688,10 +700,15 @@ class MainActivity : Activity() {
                         }
                         .show()
                 } else {
-                    val hint = if (apiKey.isNotEmpty()) {
-                        "Не удалось найти описание. Проверьте интернет, VPN и корректность ключа Gemini в Настройках."
-                    } else {
-                        "Не удалось найти описание. Проверьте подключение к интернету или добавьте ключ Gemini в Настройках."
+                    val hint = buildString {
+                        if (apiKey.isNotEmpty()) {
+                            append("Не удалось найти описание. Проверьте интернет, VPN и ключ Gemini в Настройках.")
+                            if (!geminiError.isNullOrEmpty()) {
+                                append("\n\n($geminiError)")
+                            }
+                        } else {
+                            append("Не удалось найти описание. Проверьте подключение к интернету или добавьте ключ Gemini в Настройках.")
+                        }
                     }
                     AlertDialog.Builder(this)
                         .setTitle(bookTitle)
@@ -706,10 +723,10 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun fetchFromGemini(rawTitle: String, apiKey: String): String? {
+    private fun fetchFromGemini(rawTitle: String, apiKey: String): Pair<String?, String?> {
         return try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}")
-            val prompt = "По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или лишние слова). Название: \"$rawTitle\". Напиши на русском языке без Markdown-разметки: Автор, год выхода (если известен) и краткую аннотацию без спойлеров (3-5 предложений). Если не уверен, что это за книга — ответь ровно одним словом: НЕИЗВЕСТНО."
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
+            val prompt = "По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или имя чтеца). Название: \"$rawTitle\". Напиши на русском языке без Markdown-разметки: Автор, год выхода (если известен) и краткую аннотацию без спойлеров (3-5 предложений). Если не уверен, что это за книга — ответь ровно одним словом: НЕИЗВЕСТНО."
 
             val payload = JSONObject().put(
                 "contents",
@@ -727,11 +744,16 @@ class MainActivity : Activity() {
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                setRequestProperty("x-goog-api-key", apiKey)
             }
 
             conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
 
-            if (conn.responseCode != 200) return null
+            val code = conn.responseCode
+            if (code != 200) {
+                return Pair(null, "Gemini: HTTP $code")
+            }
+
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val text = JSONObject(body)
                 .optJSONArray("candidates")
@@ -740,11 +762,15 @@ class MainActivity : Activity() {
                 ?.optJSONArray("parts")
                 ?.optJSONObject(0)
                 ?.optString("text", "")
-                ?.trim() ?: return null
+                ?.trim()
 
-            if (text.isEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) null else text
-        } catch (_: Exception) {
-            null
+            if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
+                Pair(null, "Gemini: книга не распознана")
+            } else {
+                Pair(text, null)
+            }
+        } catch (e: Exception) {
+            Pair(null, "Gemini: ${e.javaClass.simpleName}")
         }
     }
 
