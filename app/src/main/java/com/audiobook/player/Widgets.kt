@@ -96,21 +96,34 @@ class BarWidgetProvider : AppWidgetProvider() {
 }
 
 private fun updateGridWidget(context: Context, appWidgetManager: AppWidgetManager, widgetId: Int) {
-    val prefs = context.getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-    val bookTitle = prefs.getString("last_book_title", "Аудиокниги") ?: "Аудиокниги"
-
     val views = RemoteViews(context.packageName, R.layout.widget_grid)
-    views.setTextViewText(R.id.widget_title, bookTitle)
 
-    val toggleIntent = Intent(context, GridWidgetProvider::class.java).apply {
-        action = ACTION_PLAY_PAUSE
-    }
     views.setOnClickPendingIntent(
-        R.id.widget_play_btn,
+        R.id.widget_play_pause,
         PendingIntent.getBroadcast(
             context,
             10,
-            toggleIntent,
+            Intent(context, GridWidgetProvider::class.java).apply { action = ACTION_PLAY_PAUSE },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    )
+
+    views.setOnClickPendingIntent(
+        R.id.widget_rewind,
+        PendingIntent.getBroadcast(
+            context,
+            11,
+            Intent(context, GridWidgetProvider::class.java).apply { action = ACTION_REWIND },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    )
+
+    views.setOnClickPendingIntent(
+        R.id.widget_forward,
+        PendingIntent.getBroadcast(
+            context,
+            12,
+            Intent(context, GridWidgetProvider::class.java).apply { action = ACTION_FORWARD },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
     )
@@ -118,10 +131,10 @@ private fun updateGridWidget(context: Context, appWidgetManager: AppWidgetManage
     val openAppIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
     if (openAppIntent != null) {
         views.setOnClickPendingIntent(
-            R.id.widget_root,
+            R.id.widget_cover,
             PendingIntent.getActivity(
                 context,
-                11,
+                13,
                 openAppIntent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
@@ -136,17 +149,14 @@ private fun updateBarWidget(context: Context, appWidgetManager: AppWidgetManager
     val bookTitle = prefs.getString("last_book_title", "Аудиокниги") ?: "Аудиокниги"
 
     val views = RemoteViews(context.packageName, R.layout.widget_bar)
-    views.setTextViewText(R.id.widget_title, bookTitle)
+    views.setTextViewText(R.id.widget_book, bookTitle)
 
-    val toggleIntent = Intent(context, BarWidgetProvider::class.java).apply {
-        action = ACTION_PLAY_PAUSE
-    }
     views.setOnClickPendingIntent(
-        R.id.widget_play_btn,
+        R.id.widget_play_pause,
         PendingIntent.getBroadcast(
             context,
             20,
-            toggleIntent,
+            Intent(context, BarWidgetProvider::class.java).apply { action = ACTION_PLAY_PAUSE },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
     )
