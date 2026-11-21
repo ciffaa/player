@@ -179,13 +179,13 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var isSeeking = false
     private var isLoadingFolder = false
-    private var lastArtworkHash = 0
+    private var lastArtworkSize = -1
     private var sleepTimerEndMs = 0L
 
     private val updateProgressTask = object : Runnable {
         override fun run() {
             checkSleepTimer()
-            updateUI()
+            updateProgressOnly()
             handler.postDelayed(this, 500)
         }
     }
@@ -1090,7 +1090,6 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        ContextCompat.startForegroundService(this, Intent(this, PlaybackService::class.java))
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture?.addListener({
@@ -1357,19 +1356,29 @@ class MainActivity : Activity() {
         }
 
         val artBytes = player.mediaMetadata.artworkData
-        val artHash = artBytes?.contentHashCode() ?: 0
-        if (artHash != lastArtworkHash) {
-            lastArtworkHash = artHash
+        val artSize = artBytes?.size ?: 0
+        if (artSize != lastArtworkSize) {
+            lastArtworkSize = artSize
             if (artBytes != null) {
-                val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
-                if (bmp != null) coverView.setImageBitmap(bmp)
+                Thread {
+                    val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && bmp != null) {
+                            coverView.setImageBitmap(bmp)
+                        }
+                    }
+                }.start()
             } else {
                 coverView.setImageResource(android.R.drawable.ic_media_play)
             }
         }
 
         playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        updateProgressOnly()
+    }
 
+    private fun updateProgressOnly() {
+        val player = controller ?: return
         val dur = player.duration.coerceAtLeast(0)
         val pos = player.currentPosition.coerceAtLeast(0)
         if (!isSeeking) {
