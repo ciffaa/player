@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -37,7 +38,7 @@ class PlaybackService : MediaSessionService() {
                 notifyWidgets(this@PlaybackService)
             }
 
-            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 saveState(exoPlayer)
                 notifyWidgets(this@PlaybackService)
             }
@@ -75,11 +76,9 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         player?.let { saveState(it) }
-        mediaSession?.run {
-            player.release()
-            release()
-        }
+        mediaSession?.release()
         mediaSession = null
+        player?.release()
         player = null
         super.onDestroy()
     }
@@ -107,10 +106,10 @@ class PlaybackService : MediaSessionService() {
     companion object {
         fun notifyWidgets(context: Context) {
             context.sendBroadcast(Intent(context, GridWidgetProvider::class.java).apply {
-                action = "com.audiobook.player.ACTION_UPDATE_WIDGET"
+                action = ACTION_UPDATE_WIDGET
             })
             context.sendBroadcast(Intent(context, BarWidgetProvider::class.java).apply {
-                action = "com.audiobook.player.ACTION_UPDATE_WIDGET"
+                action = ACTION_UPDATE_WIDGET
             })
         }
     }
