@@ -1172,12 +1172,12 @@ class MainActivity : Activity() {
             .setView(container)
             .setPositiveButton("Сохранить") { _, _ ->
                 val trimmed = input.text.toString().trim()
-                prefs.edit().putString("gemini_api_key", trimmed).apply()
+                prefs.edit().putString("gemini_api_key", trimmed).remove("gemini_model_cache").apply()
                 updateAiKeyCard()
             }
             .setNegativeButton("Отмена", null)
             .setNeutralButton("Удалить") { _, _ ->
-                prefs.edit().remove("gemini_api_key").apply()
+                prefs.edit().remove("gemini_api_key").remove("gemini_model_cache").apply()
                 updateAiKeyCard()
             }
             .show()
@@ -1440,9 +1440,90 @@ class MainActivity : Activity() {
         return callGeminiText(prompt, apiKey)
     }
 
+    private fun resolveGeminiModel(apiKey: String): Pair<String?, String?> {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val cached = prefs.getString("gemini_model_cache", null)?.trim()
+        if (!cached.isNullOrEmpty()) {
+            return Pair(cached, null)
+        }
+
+        return try {
+            val listUrl = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=50")
+            val conn = (listUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 15000
+                requestMethod = "GET"
+                setRequestProperty("x-goog-api-key", apiKey)
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+
+            if (code !in 200..299) {
+                val errMsg = extractApiErrorMessage(body) ?: "HTTP $code"
+                return Pair(null, "ListModels: $errMsg")
+            }
+
+            val modelsArr = JSONObject(body).optJSONArray("models")
+            val candidates = mutableListOf<String>()
+            if (modelsArr != null) {
+                for (i in 0 until modelsArr.length()) {
+                    val mObj = modelsArr.optJSONObject(i) ?: continue
+                    val methods = mObj.optJSONArray("supportedGenerationMethods")
+                    var supportsGen = false
+                    if (methods != null) {
+                        for (j in 0 until methods.length()) {
+                            if (methods.optString(j) == "generateContent") {
+                                supportsGen = true
+                                break
+                            }
+                        }
+                    }
+                    if (!supportsGen) continue
+                    val fullName = mObj.optString("name", "").removePrefix("models/")
+                    if (fullName.isNotEmpty() && !fullName.contains("embedding", ignoreCase = true)) {
+                        candidates.add(fullName)
+                    }
+                }
+            }
+
+            val preferred = listOf(
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite",
+                "gemini-1.5-flash",
+                "gemini-1.5-flash-latest"
+            )
+            val chosen = preferred.firstOrNull { p -> candidates.any { it.equals(p, ignoreCase = true) } }
+                ?: candidates.firstOrNull { it.contains("flash", ignoreCase = true) }
+                ?: candidates.firstOrNull()
+
+            if (chosen != null) {
+                prefs.edit().putString("gemini_model_cache", chosen).apply()
+                Pair(chosen, null)
+            } else {
+                Pair(null, "Нет доступных моделей generateContent")
+            }
+        } catch (e: Exception) {
+            Pair(null, "ListModels: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    private fun extractApiErrorMessage(body: String): String? {
+        if (body.isBlank()) return null
+        return try {
+            val msg = JSONObject(body).optJSONObject("error")?.optString("message", "")?.trim()
+            if (!msg.isNullOrEmpty()) msg else body.take(160)
+        } catch (_: Exception) {
+            body.take(160)
+        }
+    }
+
     private fun callGeminiText(prompt: String, apiKey: String): Pair<String?, String?> {
-        val models = listOf("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
-        var lastError: String? = null
+        val (resolvedModel, resolveErr) = resolveGeminiModel(apiKey)
+        if (resolvedModel == null) {
+            return Pair(null, resolveErr ?: "Gemini: модель не найдена")
+        }
 
         val payload = JSONObject().put(
             "contents",
@@ -1454,50 +1535,49 @@ class MainActivity : Activity() {
             )
         ).toString()
 
-        for (model in models) {
-            try {
-                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10000
-                    readTimeout = 20000
-                    requestMethod = "POST"
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    setRequestProperty("x-goog-api-key", apiKey)
-                }
-
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-
-                val code = conn.responseCode
-                if (code == 404) {
-                    lastError = "Gemini ($model): HTTP 404"
-                    continue
-                }
-                if (code != 200) {
-                    return Pair(null, "Gemini ($model): HTTP $code")
-                }
-
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                val text = JSONObject(body)
-                    .optJSONArray("candidates")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("content")
-                    ?.optJSONArray("parts")
-                    ?.optJSONObject(0)
-                    ?.optString("text", "")
-                    ?.trim()
-
-                return if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
-                    Pair(null, "Gemini: книга не распознана")
-                } else {
-                    Pair(text, null)
-                }
-            } catch (e: Exception) {
-                lastError = "Gemini ($model): ${e.javaClass.simpleName}"
+        return try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$resolvedModel:generateContent")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 20000
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                setRequestProperty("x-goog-api-key", apiKey)
             }
-        }
 
-        return Pair(null, lastError ?: "Gemini: HTTP 404")
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+
+            if (code !in 200..299) {
+                if (code == 404) {
+                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .edit().remove("gemini_model_cache").apply()
+                }
+                val detail = extractApiErrorMessage(body) ?: "HTTP $code"
+                return Pair(null, "Gemini ($resolvedModel): $detail")
+            }
+
+            val text = JSONObject(body)
+                .optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?.optJSONObject(0)
+                ?.optString("text", "")
+                ?.trim()
+
+            if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
+                Pair(null, "Gemini: книга не распознана")
+            } else {
+                Pair(text, null)
+            }
+        } catch (e: Exception) {
+            Pair(null, "Gemini ($resolvedModel): ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     private fun fetchFromGoogleBooks(query: String): String? {
