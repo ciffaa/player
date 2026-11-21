@@ -143,7 +143,6 @@ class MainActivity : Activity() {
 
     private var bookDurationsUri: String? = null
     private var bookTrackDurationsMs: LongArray = LongArray(0)
-    private var isSeekingBook = false
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -172,7 +171,6 @@ class MainActivity : Activity() {
     private lateinit var seekBar: SeekBar
     private lateinit var elapsedTimeView: TextView
     private lateinit var remainingTimeView: TextView
-    private lateinit var bookSeekBar: SeekBar
     private lateinit var bookProgressTextView: TextView
 
     private lateinit var pickLibraryBtn: Button
@@ -318,7 +316,7 @@ class MainActivity : Activity() {
             )
         }
 
-        val coverSize = dp(270)
+        val coverSize = dp(275)
         coverView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setImageResource(android.R.drawable.ic_media_play)
@@ -341,7 +339,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(16)
+                bottomMargin = dp(18)
             }
         }
 
@@ -454,7 +452,7 @@ class MainActivity : Activity() {
 
         val timeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(4), dp(8), dp(8))
+            setPadding(dp(8), dp(4), dp(8), dp(6))
         }
         elapsedTimeView = TextView(this).apply {
             text = "00:00"
@@ -469,30 +467,6 @@ class MainActivity : Activity() {
         }
         timeRow.addView(elapsedTimeView)
         timeRow.addView(remainingTimeView)
-
-        bookSeekBar = SeekBar(this).apply {
-            max = 1000
-            progress = 0
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser) {
-                        val totalMs = computeTotalBookDurationMs()
-                        if (totalMs > 0L) {
-                            val targetMs = (totalMs.toDouble() * (progress / 1000.0)).toLong()
-                            val remMs = (totalMs - targetMs).coerceAtLeast(0L)
-                            val pct = (progress / 10).coerceIn(0, 100)
-                            bookProgressTextView.text = "Книга: $pct% • Осталось ${formatTime(remMs)}"
-                        }
-                    }
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) { isSeekingBook = true }
-                override fun onStopTrackingTouch(sb: SeekBar?) {
-                    isSeekingBook = false
-                    val progress = sb?.progress ?: return
-                    seekToBookFraction(progress / 1000.0)
-                }
-            })
-        }
 
         bookProgressTextView = TextView(this).apply {
             text = ""
@@ -510,10 +484,6 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         playerContainer.addView(timeRow, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        playerContainer.addView(bookSeekBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -795,40 +765,9 @@ class MainActivity : Activity() {
         return elapsed
     }
 
-    private fun seekToBookFraction(fraction: Double) {
-        val player = controller ?: return
-        val count = player.mediaItemCount
-        if (count <= 0) return
-        val totalMs = computeTotalBookDurationMs()
-        if (totalMs <= 0L) return
-
-        val clamped = fraction.coerceIn(0.0, 1.0)
-        var targetMs = (totalMs.toDouble() * clamped).toLong()
-
-        for (i in 0 until count) {
-            val trackDur = getEffectiveTrackDurationMs(i, player)
-            if (trackDur > 0L && targetMs < trackDur) {
-                player.seekTo(i, targetMs.coerceAtLeast(0L))
-                saveCurrentProgress()
-                updateUI()
-                return
-            }
-            if (trackDur > 0L) {
-                targetMs -= trackDur
-            }
-        }
-        val lastIdx = count - 1
-        val lastDur = getEffectiveTrackDurationMs(lastIdx, player)
-        player.seekTo(lastIdx, (lastDur - 1000L).coerceAtLeast(0L))
-        saveCurrentProgress()
-        updateUI()
-    }
-
     private fun updateBookProgressUI() {
-        if (isSeekingBook) return
         val player = controller
         if (player == null || player.mediaItemCount <= 0) {
-            bookSeekBar.progress = 0
             bookProgressTextView.text = ""
             return
         }
@@ -836,7 +775,6 @@ class MainActivity : Activity() {
         val totalMs = computeTotalBookDurationMs()
         val elapsedMs = computeElapsedBookMs(player)
         if (totalMs <= 0L) {
-            bookSeekBar.progress = 0
             bookProgressTextView.text = ""
             return
         }
@@ -845,7 +783,6 @@ class MainActivity : Activity() {
         val remMs = (totalMs - elapsedMs).coerceAtLeast(0L)
         val pct = (ratio * 100.0).toInt().coerceIn(0, 100)
 
-        bookSeekBar.progress = (ratio * 1000.0).toInt().coerceIn(0, 1000)
         bookProgressTextView.text = "Книга: $pct% • Осталось ${formatTime(remMs)}"
     }
 
@@ -1505,8 +1442,6 @@ class MainActivity : Activity() {
         remainingTimeView.setTextColor(t.textSecondary)
         seekBar.progressTintList = ColorStateList.valueOf(t.accentBg)
         seekBar.thumbTintList = ColorStateList.valueOf(t.accentBg)
-        bookSeekBar.progressTintList = ColorStateList.valueOf(t.navActive)
-        bookSeekBar.thumbTintList = ColorStateList.valueOf(t.navActive)
         bookProgressTextView.setTextColor(t.textSecondary)
         updateTimerButton()
 
