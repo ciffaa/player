@@ -17,12 +17,14 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.Executors
 
 class PlaybackService : MediaSessionService() {
 
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
-    private var lastArtworkHash = 0
+    private var lastArtworkSize = -1
+    private val ioExecutor = Executors.newSingleThreadExecutor()
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
 
     override fun onCreate() {
@@ -47,14 +49,13 @@ class PlaybackService : MediaSessionService() {
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 saveState(exoPlayer)
-                saveArtworkIfNeeded(exoPlayer.mediaMetadata.artworkData)
+                saveArtworkAsync(exoPlayer.mediaMetadata.artworkData)
                 notifyWidgets(this@PlaybackService)
             }
 
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 saveState(exoPlayer)
-                saveArtworkIfNeeded(mediaMetadata.artworkData)
-                notifyWidgets(this@PlaybackService)
+                saveArtworkAsync(mediaMetadata.artworkData)
             }
         })
 
@@ -117,12 +118,12 @@ class PlaybackService : MediaSessionService() {
         val startIndex = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
         val startPos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
 
-        Thread {
-            val dir = DocumentFile.fromTreeUri(this, Uri.parse(uriStr)) ?: return@Thread
+        ioExecutor.execute {
+            val dir = DocumentFile.fromTreeUri(this, Uri.parse(uriStr)) ?: return@execute
             val bookName = dir.name ?: "Аудиокнига"
             val files = mutableListOf<DocumentFile>()
             collectAudioFiles(dir, files)
-            if (files.isEmpty()) return@Thread
+            if (files.isEmpty()) return@execute
 
             val items = files.map { file ->
                 val title = file.name?.substringBeforeLast('.') ?: "Глава"
@@ -145,7 +146,7 @@ class PlaybackService : MediaSessionService() {
                 p.playWhenReady = true
                 p.play()
             }
-        }.start()
+        }
     }
 
     private fun collectAudioFiles(dir: DocumentFile, out: MutableList<DocumentFile>) {
@@ -162,26 +163,30 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun saveArtworkIfNeeded(artBytes: ByteArray?) {
-        val hash = artBytes?.contentHashCode() ?: 0
-        if (hash == lastArtworkHash) return
-        lastArtworkHash = hash
+    private fun saveArtworkAsync(artBytes: ByteArray?) {
+        val size = artBytes?.size ?: 0
+        if (size == lastArtworkSize) return
+        lastArtworkSize = size
 
-        val coverFile = File(cacheDir, "widget_cover.jpg")
-        if (artBytes == null) {
-            if (coverFile.exists()) coverFile.delete()
-            return
-        }
-
-        try {
-            val raw = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size) ?: return
-            val scaled = Bitmap.createScaledBitmap(raw, 256, 256, true)
-            FileOutputStream(coverFile).use { out ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)
+        ioExecutor.execute {
+            val coverFile = File(cacheDir, "widget_cover.jpg")
+            if (artBytes == null) {
+                if (coverFile.exists()) coverFile.delete()
+                notifyWidgets(this)
+                return@execute
             }
-            if (scaled != raw) scaled.recycle()
-            raw.recycle()
-        } catch (_: Exception) {
+
+            try {
+                val raw = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size) ?: return@execute
+                val scaled = Bitmap.createScaledBitmap(raw, 256, 256, true)
+                FileOutputStream(coverFile).use { out ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                }
+                if (scaled != raw) scaled.recycle()
+                raw.recycle()
+                notifyWidgets(this)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -203,6 +208,7 @@ class PlaybackService : MediaSessionService() {
             .putBoolean("is_playing", false)
             .apply()
         notifyWidgets(this)
+        ioExecutor.shutdownNow()
         mediaSession?.release()
         mediaSession = null
         player?.release()
