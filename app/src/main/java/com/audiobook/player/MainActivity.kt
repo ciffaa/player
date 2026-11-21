@@ -841,8 +841,8 @@ class MainActivity : Activity() {
             • Если обложки нет в аудиофайлах, плеер сам ищет картинку в папке книги, а затем в интернете.
             • Нажатие на обложку открывает меню: выбрать картинку из галереи, найти в интернете заново или сбросить.
 
-            Описание книги:
-            • Нажмите на название книги сверху, чтобы посмотреть автора, год и краткую аннотацию (через Gemini API при наличии ключа или через Google Books и Википедию).
+            Описание и пересказ сюжета:
+            • Нажмите на название книги сверху, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
 
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
@@ -1214,6 +1214,142 @@ class MainActivity : Activity() {
             .trim()
     }
 
+    private fun buildCurrentProgressContext(): Triple<Int, Int, String> {
+        val player = controller
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        if (player != null && player.mediaItemCount > 0) {
+            val posMs = player.currentPosition.coerceAtLeast(0L)
+            if (player.mediaItemCount == 1 && activeM4bChapters.size > 1) {
+                val curCh = currentM4bChapter(posMs) ?: activeM4bChapters.first()
+                return Triple(curCh.index + 1, activeM4bChapters.size, curCh.title)
+            }
+            val curIdx = player.currentMediaItemIndex + 1
+            val total = player.mediaItemCount
+            val title = player.currentMediaItem?.mediaMetadata?.title?.toString()
+                ?: "Глава $curIdx"
+            return Triple(curIdx, total, title)
+        }
+        val savedIdx = prefs.getInt("last_index", 0) + 1
+        return Triple(savedIdx, 0, "Глава $savedIdx")
+    }
+
+    private fun showStoryRecapDialog(bookTitle: String, forceRefresh: Boolean = false) {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val apiKey = prefs.getString("gemini_api_key", "")?.trim() ?: ""
+        if (apiKey.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Освежить память")
+                .setMessage("Для пересказа событий до текущей главы нужен API-ключ Gemini. Добавьте его в Настройках.")
+                .setPositiveButton("В Настройки") { _, _ -> showTab(2) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+
+        val (chapterNum, totalChapters, chapterTitle) = buildCurrentProgressContext()
+        val totalMs = computeTotalBookDurationMs()
+        val elapsedMs = controller?.let { computeElapsedBookMs(it) } ?: 0L
+        val pct = if (totalMs > 0L) {
+            ((elapsedMs.toDouble() / totalMs.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+        } else -1
+
+        val cacheKey = "recap_${bookTitle}_${chapterNum}_${chapterTitle}"
+        val cached = prefs.getString(cacheKey, null)
+
+        val subtitleInfo = buildString {
+            append("Глава $chapterNum")
+            if (totalChapters > 0) append(" из $totalChapters")
+            if (pct >= 0) append(" ($pct%)")
+        }
+
+        if (!forceRefresh && !cached.isNullOrEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Что было ранее • $subtitleInfo")
+                .setMessage(cached)
+                .setPositiveButton("Закрыть", null)
+                .setNeutralButton("Обновить") { _, _ ->
+                    showStoryRecapDialog(bookTitle, forceRefresh = true)
+                }
+                .show()
+            return
+        }
+
+        val loadingDialog = AlertDialog.Builder(this)
+            .setTitle("Освежить память • $subtitleInfo")
+            .setMessage("Вспоминаю события до главы «$chapterTitle»...")
+            .setNegativeButton("Отмена", null)
+            .show()
+
+        Thread {
+            val (recap, err) = fetchStoryRecapFromGemini(
+                rawTitle = bookTitle,
+                chapterNum = chapterNum,
+                totalChapters = totalChapters,
+                chapterTitle = chapterTitle,
+                percent = pct,
+                apiKey = apiKey
+            )
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                loadingDialog.dismiss()
+
+                if (recap != null) {
+                    prefs.edit().putString(cacheKey, recap).apply()
+                    AlertDialog.Builder(this)
+                        .setTitle("Что было ранее • $subtitleInfo")
+                        .setMessage(recap)
+                        .setPositiveButton("Закрыть", null)
+                        .setNeutralButton("Обновить") { _, _ ->
+                            showStoryRecapDialog(bookTitle, forceRefresh = true)
+                        }
+                        .show()
+                } else {
+                    val msg = buildString {
+                        append("Не удалось составить пересказ. Проверьте интернет, VPN и ключ Gemini.")
+                        if (!err.isNullOrEmpty()) append("\n\n($err)")
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("Освежить память")
+                        .setMessage(msg)
+                        .setPositiveButton("Закрыть", null)
+                        .setNeutralButton("Повторить") { _, _ ->
+                            showStoryRecapDialog(bookTitle, forceRefresh = true)
+                        }
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun fetchStoryRecapFromGemini(
+        rawTitle: String,
+        chapterNum: Int,
+        totalChapters: Int,
+        chapterTitle: String,
+        percent: Int,
+        apiKey: String
+    ): Pair<String?, String?> {
+        val progressDesc = buildString {
+            append("текущая глава №$chapterNum")
+            if (totalChapters > 0) append(" из $totalChapters")
+            append(" («$chapterTitle»)")
+            if (percent >= 0) append(", прослушано примерно $percent% книги")
+        }
+        val prompt = """
+            По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или имя чтеца): "$rawTitle".
+            Слушатель сейчас находится на отметке: $progressDesc.
+            Напиши на русском языке без Markdown-разметки (без звёздочек, решёток и жирного шрифта) краткое напоминание, что произошло в книге ДО начала этой главы, чтобы освежить память перед продолжением.
+            Правила:
+            1. Строго БЕЗ спойлеров к текущей главе и дальнейшему сюжету! Описывай только события, предшествующие отметке $progressDesc.
+            2. Оформи в виде 4–5 коротких абзацев или пунктов с символом • в начале строки: ключевые герои, завязка и главные события пройденной части.
+            3. Если книга не художественная (нон-фикшн), кратко напомни основные идеи пройденных глав до этой отметки.
+            4. Если не можешь надёжно определить книгу — ответь ровно одним словом: НЕИЗВЕСТНО.
+        """.trimIndent()
+
+        return callGeminiText(prompt, apiKey)
+    }
+
     private fun showBookInfoDialog(bookTitle: String, forceRefresh: Boolean) {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val cacheKey = "book_info_$bookTitle"
@@ -1224,6 +1360,9 @@ class MainActivity : Activity() {
                 .setTitle(bookTitle)
                 .setMessage(cached)
                 .setPositiveButton("Закрыть", null)
+                .setNegativeButton("Освежить память") { _, _ ->
+                    showStoryRecapDialog(bookTitle, forceRefresh = false)
+                }
                 .setNeutralButton("Обновить") { _, _ ->
                     showBookInfoDialog(bookTitle, forceRefresh = true)
                 }
@@ -1262,6 +1401,9 @@ class MainActivity : Activity() {
                         .setTitle(bookTitle)
                         .setMessage(result)
                         .setPositiveButton("Закрыть", null)
+                        .setNegativeButton("Освежить память") { _, _ ->
+                            showStoryRecapDialog(bookTitle, forceRefresh = false)
+                        }
                         .setNeutralButton("Обновить") { _, _ ->
                             showBookInfoDialog(bookTitle, forceRefresh = true)
                         }
@@ -1281,6 +1423,9 @@ class MainActivity : Activity() {
                         .setTitle(bookTitle)
                         .setMessage(hint)
                         .setPositiveButton("Закрыть", null)
+                        .setNegativeButton("Освежить память") { _, _ ->
+                            showStoryRecapDialog(bookTitle, forceRefresh = false)
+                        }
                         .setNeutralButton("Повторить") { _, _ ->
                             showBookInfoDialog(bookTitle, forceRefresh = true)
                         }
@@ -1291,9 +1436,13 @@ class MainActivity : Activity() {
     }
 
     private fun fetchFromGemini(rawTitle: String, apiKey: String): Pair<String?, String?> {
+        val prompt = "По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или имя чтеца). Название: \"$rawTitle\". Напиши на русском языке без Markdown-разметки: Автор, год выхода (если известен) и краткую аннотацию без спойлеров (3-5 предложений). Если не уверен, что это за книга — ответь ровно одним словом: НЕИЗВЕСТНО."
+        return callGeminiText(prompt, apiKey)
+    }
+
+    private fun callGeminiText(prompt: String, apiKey: String): Pair<String?, String?> {
         return try {
             val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
-            val prompt = "По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или имя чтеца). Название: \"$rawTitle\". Напиши на русском языке без Markdown-разметки: Автор, год выхода (если известен) и краткую аннотацию без спойлеров (3-5 предложений). Если не уверен, что это за книга — ответь ровно одним словом: НЕИЗВЕСТНО."
 
             val payload = JSONObject().put(
                 "contents",
@@ -1307,7 +1456,7 @@ class MainActivity : Activity() {
 
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 10000
-                readTimeout = 15000
+                readTimeout = 20000
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=UTF-8")
