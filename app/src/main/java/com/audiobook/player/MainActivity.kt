@@ -47,6 +47,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
 
@@ -1337,14 +1338,10 @@ class MainActivity : Activity() {
             if (percent >= 0) append(", прослушано примерно $percent% книги")
         }
         val prompt = """
-            По названию папки аудиокниги определи книгу (учитывай возможный транслит, опечатки, номера или имя чтеца): "$rawTitle".
-            Слушатель сейчас находится на отметке: $progressDesc.
-            Напиши на русском языке без Markdown-разметки (без звёздочек, решёток и жирного шрифта) краткое напоминание, что произошло в книге ДО начала этой главы, чтобы освежить память перед продолжением.
-            Правила:
-            1. Строго БЕЗ спойлеров к текущей главе и дальнейшему сюжету! Описывай только события, предшествующие отметке $progressDesc.
-            2. Оформи в виде 4–5 коротких абзацев или пунктов с символом • в начале строки: ключевые герои, завязка и главные события пройденной части.
-            3. Если книга не художественная (нон-фикшн), кратко напомни основные идеи пройденных глав до этой отметки.
-            4. Если не можешь надёжно определить книгу — ответь ровно одним словом: НЕИЗВЕСТНО.
+            Книга по названию папки/файла: "$rawTitle".
+            Отметка слушателя: $progressDesc.
+            Напиши по-русски без Markdown (без *, #, **) краткое напоминание событий ДО начала этой главы без спойлеров к текущей и будущим главам.
+            Формат: до 4 коротких пунктов с • в начале строки (герои, завязка и ключевые события пройденной части). Если не уверен — ответь ровно: НЕИЗВЕСТНО.
         """.trimIndent()
 
         return callGeminiText(prompt, apiKey)
@@ -1450,8 +1447,8 @@ class MainActivity : Activity() {
         return try {
             val listUrl = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=50")
             val conn = (listUrl.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000
-                readTimeout = 15000
+                connectTimeout = 15000
+                readTimeout = 20000
                 requestMethod = "GET"
                 setRequestProperty("x-goog-api-key", apiKey)
             }
@@ -1519,6 +1516,48 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun executeGenerateRequest(model: String, payload: String, apiKey: String): Pair<String?, String?> {
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15000
+            readTimeout = 45000
+            requestMethod = "POST"
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("x-goog-api-key", apiKey)
+        }
+
+        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+
+        if (code !in 200..299) {
+            if (code == 404) {
+                getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                    .edit().remove("gemini_model_cache").apply()
+            }
+            val detail = extractApiErrorMessage(body) ?: "HTTP $code"
+            return Pair(null, "Gemini ($model): $detail")
+        }
+
+        val text = JSONObject(body)
+            .optJSONArray("candidates")
+            ?.optJSONObject(0)
+            ?.optJSONObject("content")
+            ?.optJSONArray("parts")
+            ?.optJSONObject(0)
+            ?.optString("text", "")
+            ?.trim()
+
+        return if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
+            Pair(null, "Gemini: книга не распознана")
+        } else {
+            Pair(text, null)
+        }
+    }
+
     private fun callGeminiText(prompt: String, apiKey: String): Pair<String?, String?> {
         val (resolvedModel, resolveErr) = resolveGeminiModel(apiKey)
         if (resolvedModel == null) {
@@ -1535,48 +1574,18 @@ class MainActivity : Activity() {
             )
         ).toString()
 
-        return try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$resolvedModel:generateContent")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000
-                readTimeout = 20000
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                setRequestProperty("x-goog-api-key", apiKey)
-            }
-
-            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
-
-            if (code !in 200..299) {
-                if (code == 404) {
-                    getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-                        .edit().remove("gemini_model_cache").apply()
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                return executeGenerateRequest(resolvedModel, payload, apiKey)
+            } catch (e: SocketTimeoutException) {
+                if (attempt >= 2) {
+                    return Pair(null, "Gemini ($resolvedModel): таймаут ответа")
                 }
-                val detail = extractApiErrorMessage(body) ?: "HTTP $code"
-                return Pair(null, "Gemini ($resolvedModel): $detail")
+            } catch (e: Exception) {
+                return Pair(null, "Gemini ($resolvedModel): ${e.javaClass.simpleName}: ${e.message}")
             }
-
-            val text = JSONObject(body)
-                .optJSONArray("candidates")
-                ?.optJSONObject(0)
-                ?.optJSONObject("content")
-                ?.optJSONArray("parts")
-                ?.optJSONObject(0)
-                ?.optString("text", "")
-                ?.trim()
-
-            if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
-                Pair(null, "Gemini: книга не распознана")
-            } else {
-                Pair(text, null)
-            }
-        } catch (e: Exception) {
-            Pair(null, "Gemini ($resolvedModel): ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
