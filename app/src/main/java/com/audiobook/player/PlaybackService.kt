@@ -3,6 +3,8 @@ package com.audiobook.player
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.common.AudioAttributes
@@ -13,11 +15,14 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import java.io.File
+import java.io.FileOutputStream
 
 class PlaybackService : MediaSessionService() {
 
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
+    private var lastArtworkHash = 0
     private val audioExt = listOf(".mp3", ".m4b", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma")
 
     override fun onCreate() {
@@ -36,14 +41,19 @@ class PlaybackService : MediaSessionService() {
 
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (!isPlaying) {
-                    saveState(exoPlayer)
-                }
+                saveState(exoPlayer)
                 notifyWidgets(this@PlaybackService)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 saveState(exoPlayer)
+                saveArtworkIfNeeded(exoPlayer.mediaMetadata.artworkData)
+                notifyWidgets(this@PlaybackService)
+            }
+
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                saveState(exoPlayer)
+                saveArtworkIfNeeded(mediaMetadata.artworkData)
                 notifyWidgets(this@PlaybackService)
             }
         })
@@ -152,6 +162,29 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun saveArtworkIfNeeded(artBytes: ByteArray?) {
+        val hash = artBytes?.contentHashCode() ?: 0
+        if (hash == lastArtworkHash) return
+        lastArtworkHash = hash
+
+        val coverFile = File(cacheDir, "widget_cover.jpg")
+        if (artBytes == null) {
+            if (coverFile.exists()) coverFile.delete()
+            return
+        }
+
+        try {
+            val raw = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size) ?: return
+            val scaled = Bitmap.createScaledBitmap(raw, 256, 256, true)
+            FileOutputStream(coverFile).use { out ->
+                scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            if (scaled != raw) scaled.recycle()
+            raw.recycle()
+        } catch (_: Exception) {
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
         return mediaSession
     }
@@ -165,6 +198,11 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         player?.let { saveState(it) }
+        getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("is_playing", false)
+            .apply()
+        notifyWidgets(this)
         mediaSession?.release()
         mediaSession = null
         player?.release()
@@ -173,21 +211,27 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun saveState(exoPlayer: ExoPlayer) {
-        if (exoPlayer.mediaItemCount == 0) return
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val currentUri = prefs.getString("folder_uri", null)
-        val title = exoPlayer.currentMediaItem?.mediaMetadata?.artist?.toString()
+        val editor = prefs.edit().putBoolean("is_playing", exoPlayer.isPlaying)
 
-        val editor = prefs.edit()
-            .putInt("last_index", exoPlayer.currentMediaItemIndex)
-            .putLong("last_pos", exoPlayer.currentPosition.coerceAtLeast(0L))
+        if (exoPlayer.mediaItemCount > 0) {
+            val currentUri = prefs.getString("folder_uri", null)
+            val title = exoPlayer.currentMediaItem?.mediaMetadata?.artist?.toString()
+            val chapter = exoPlayer.currentMediaItem?.mediaMetadata?.title?.toString()
 
-        if (!currentUri.isNullOrEmpty()) {
-            editor.putInt("idx_$currentUri", exoPlayer.currentMediaItemIndex)
-            editor.putLong("pos_$currentUri", exoPlayer.currentPosition.coerceAtLeast(0L))
-        }
-        if (!title.isNullOrEmpty()) {
-            editor.putString("last_book_title", title)
+            editor.putInt("last_index", exoPlayer.currentMediaItemIndex)
+            editor.putLong("last_pos", exoPlayer.currentPosition.coerceAtLeast(0L))
+
+            if (!currentUri.isNullOrEmpty()) {
+                editor.putInt("idx_$currentUri", exoPlayer.currentMediaItemIndex)
+                editor.putLong("pos_$currentUri", exoPlayer.currentPosition.coerceAtLeast(0L))
+            }
+            if (!title.isNullOrEmpty()) {
+                editor.putString("last_book_title", title)
+            }
+            if (!chapter.isNullOrEmpty()) {
+                editor.putString("last_chapter_title", chapter)
+            }
         }
         editor.apply()
     }
