@@ -1441,53 +1441,63 @@ class MainActivity : Activity() {
     }
 
     private fun callGeminiText(prompt: String, apiKey: String): Pair<String?, String?> {
-        return try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
+        val models = listOf("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
+        var lastError: String? = null
 
-            val payload = JSONObject().put(
-                "contents",
-                JSONArray().put(
-                    JSONObject().put(
-                        "parts",
-                        JSONArray().put(JSONObject().put("text", prompt))
-                    )
+        val payload = JSONObject().put(
+            "contents",
+            JSONArray().put(
+                JSONObject().put(
+                    "parts",
+                    JSONArray().put(JSONObject().put("text", prompt))
                 )
-            ).toString()
+            )
+        ).toString()
 
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000
-                readTimeout = 20000
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                setRequestProperty("x-goog-api-key", apiKey)
+        for (model in models) {
+            try {
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 10000
+                    readTimeout = 20000
+                    requestMethod = "POST"
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    setRequestProperty("x-goog-api-key", apiKey)
+                }
+
+                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+
+                val code = conn.responseCode
+                if (code == 404) {
+                    lastError = "Gemini ($model): HTTP 404"
+                    continue
+                }
+                if (code != 200) {
+                    return Pair(null, "Gemini ($model): HTTP $code")
+                }
+
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val text = JSONObject(body)
+                    .optJSONArray("candidates")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("content")
+                    ?.optJSONArray("parts")
+                    ?.optJSONObject(0)
+                    ?.optString("text", "")
+                    ?.trim()
+
+                return if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
+                    Pair(null, "Gemini: книга не распознана")
+                } else {
+                    Pair(text, null)
+                }
+            } catch (e: Exception) {
+                lastError = "Gemini ($model): ${e.javaClass.simpleName}"
             }
-
-            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-
-            val code = conn.responseCode
-            if (code != 200) {
-                return Pair(null, "Gemini: HTTP $code")
-            }
-
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val text = JSONObject(body)
-                .optJSONArray("candidates")
-                ?.optJSONObject(0)
-                ?.optJSONObject("content")
-                ?.optJSONArray("parts")
-                ?.optJSONObject(0)
-                ?.optString("text", "")
-                ?.trim()
-
-            if (text.isNullOrEmpty() || text.equals("НЕИЗВЕСТНО", ignoreCase = true)) {
-                Pair(null, "Gemini: книга не распознана")
-            } else {
-                Pair(text, null)
-            }
-        } catch (e: Exception) {
-            Pair(null, "Gemini: ${e.javaClass.simpleName}")
         }
+
+        return Pair(null, lastError ?: "Gemini: HTTP 404")
     }
 
     private fun fetchFromGoogleBooks(query: String): String? {
