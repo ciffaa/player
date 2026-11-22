@@ -349,18 +349,37 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun isSeriesFolderName(name: String): Boolean {
+        val lower = name.trim().lowercase()
+        val seriesMarkers = listOf(
+            "ночная стража",
+            "night watch",
+            "плоский мир",
+            "discworld",
+            "цикл",
+            "серия",
+            "сборник",
+            "антология"
+        )
+        return seriesMarkers.any { lower.contains(it) }
+    }
+
     private fun extractAuthorFromBookUri(bookUriStr: String?): String {
         if (bookUriStr.isNullOrEmpty()) return ""
         val decoded = Uri.decode(bookUriStr)
         val pathPart = decoded.substringAfterLast(':')
         val segments = pathPart.split('/').map { it.trim() }.filter { it.isNotEmpty() }
-        if (segments.size >= 3) {
-            val candidate = segments[segments.size - 2]
-            if (!candidate.equals("Books", ignoreCase = true) &&
-                !candidate.equals("Audiobooks", ignoreCase = true)
+        for (i in (segments.size - 2) downTo 0) {
+            val candidate = segments[i]
+            if (candidate.equals("Books", ignoreCase = true) ||
+                candidate.equals("Audiobooks", ignoreCase = true) ||
+                candidate.equals("Audio", ignoreCase = true) ||
+                candidate.equals("Книги", ignoreCase = true) ||
+                isSeriesFolderName(candidate)
             ) {
-                return candidate
+                continue
             }
+            return candidate
         }
         return ""
     }
@@ -1873,7 +1892,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun getCoverFile(bookUriStr: String, custom: Boolean): File {
         val dir = File(filesDir, "covers").apply { if (!exists()) mkdirs() }
-        val prefix = if (custom) "custom_" else "auto_"
+        val prefix = if (custom) "custom_v2_" else "auto_v2_"
         return File(dir, "$prefix${bookUriStr.hashCode()}.jpg")
     }
 
@@ -1908,21 +1927,38 @@ class MainActivity : Activity(), SensorEventListener {
         return null
     }
 
-    private fun buildCoverSearchQueries(bookTitle: String, bookUriStr: String? = null): List<String> {
-        val authorFromPath = extractAuthorFromBookUri(bookUriStr)
-        val baseClean = normalizeQuery(bookTitle)
-        val withoutSeriesOrNum = baseClean
+    private fun stripSeriesWords(raw: String): String {
+        return raw
+            .replace(Regex("\\b(ночная стража|night watch|плоский мир|discworld|цикл|серия|сборник|антология)\\b", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\b(том|книга|часть|выпуск|ч\\.|т\\.|кн\\.)\\s*\\d+\\b", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+    }
+
+    private fun buildCoverSearchQueries(bookTitle: String, bookUriStr: String? = null): List<String> {
+        val authorFromPath = extractAuthorFromBookUri(bookUriStr)
+        val parts = bookTitle.split(Regex("\\s*[—–-]\\s*|\\s*/\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+        val specificBookPart = if (parts.size >= 2 && !isSeriesFolderName(parts.last())) {
+            parts.last()
+        } else if (parts.size >= 2 && !isSeriesFolderName(parts.first())) {
+            parts.first()
+        } else {
+            bookTitle
+        }
+
+        val cleanBookOnly = stripSeriesWords(normalizeQuery(specificBookPart))
+        val cleanFull = stripSeriesWords(normalizeQuery(bookTitle))
+        val cleanAuthor = stripSeriesWords(normalizeQuery(authorFromPath))
 
         val list = mutableListOf<String>()
-        if (authorFromPath.isNotEmpty() && !baseClean.contains(authorFromPath, ignoreCase = true)) {
-            list.add("$authorFromPath $baseClean".trim())
+        if (cleanBookOnly.isNotEmpty() && cleanAuthor.isNotEmpty() && !cleanBookOnly.contains(cleanAuthor, ignoreCase = true)) {
+            list.add("$cleanBookOnly $cleanAuthor".trim())
         }
-        if (baseClean.isNotEmpty()) list.add(baseClean)
-        if (withoutSeriesOrNum.isNotEmpty() && !list.contains(withoutSeriesOrNum)) {
-            list.add(withoutSeriesOrNum)
+        if (cleanBookOnly.isNotEmpty() && !list.contains(cleanBookOnly)) {
+            list.add(cleanBookOnly)
+        }
+        if (cleanFull.isNotEmpty() && !list.contains(cleanFull)) {
+            list.add(cleanFull)
         }
         return list
     }
@@ -2168,7 +2204,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun fetchCoverFromGoogleBooks(query: String): Bitmap? {
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&maxResults=5")
+            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&maxResults=8")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 8000
                 readTimeout = 8000
@@ -2177,20 +2213,24 @@ class MainActivity : Activity(), SensorEventListener {
             if (conn.responseCode != 200) return null
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val items = JSONObject(body).optJSONArray("items") ?: return null
+            var fallbackBmp: Bitmap? = null
             for (i in 0 until items.length()) {
-                val links = items.getJSONObject(i)
-                    .optJSONObject("volumeInfo")
-                    ?.optJSONObject("imageLinks") ?: continue
+                val volInfo = items.getJSONObject(i).optJSONObject("volumeInfo") ?: continue
+                val volTitle = volInfo.optString("title", "").lowercase()
+                val links = volInfo.optJSONObject("imageLinks") ?: continue
                 val rawUrl = links.optString("thumbnail", "").ifEmpty {
                     links.optString("smallThumbnail", "")
                 }
                 if (rawUrl.isNotEmpty()) {
                     val httpsUrl = rawUrl.replace("http://", "https://")
                     val bmp = downloadBitmap(httpsUrl)
-                    if (bmp != null) return bmp
+                    if (bmp != null) {
+                        if (fallbackBmp == null) fallbackBmp = bmp
+                        if (!isSeriesFolderName(volTitle)) return bmp
+                    }
                 }
             }
-            null
+            fallbackBmp
         } catch (_: Exception) {
             null
         }
@@ -2201,7 +2241,7 @@ class MainActivity : Activity(), SensorEventListener {
         for (media in medias) {
             try {
                 val encoded = URLEncoder.encode(query, "UTF-8")
-                val url = URL("https://itunes.apple.com/search?term=$encoded&media=$media&limit=3")
+                val url = URL("https://itunes.apple.com/search?term=$encoded&media=$media&limit=5")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
@@ -2210,14 +2250,24 @@ class MainActivity : Activity(), SensorEventListener {
                 if (conn.responseCode != 200) continue
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val results = JSONObject(body).optJSONArray("results") ?: continue
+                var fallbackBmp: Bitmap? = null
                 for (i in 0 until results.length()) {
-                    val art = results.getJSONObject(i).optString("artworkUrl100", "")
+                    val itemObj = results.getJSONObject(i)
+                    val trackName = itemObj.optString("trackName", "").lowercase()
+                    val collectionName = itemObj.optString("collectionName", "").lowercase()
+                    val art = itemObj.optString("artworkUrl100", "")
                     if (art.isNotEmpty()) {
                         val hiRes = art.replace("100x100bb", "600x600bb")
                         val bmp = downloadBitmap(hiRes)
-                        if (bmp != null) return bmp
+                        if (bmp != null) {
+                            if (fallbackBmp == null) fallbackBmp = bmp
+                            if (!isSeriesFolderName(trackName) && !isSeriesFolderName(collectionName)) {
+                                return bmp
+                            }
+                        }
                     }
                 }
+                if (fallbackBmp != null) return fallbackBmp
             } catch (_: Exception) {
             }
         }
