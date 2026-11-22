@@ -176,8 +176,11 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsScrollView: ScrollView
     private lateinit var settingsContainer: LinearLayout
 
-    private lateinit var bookTitleView: TextView
+    private lateinit var topHeaderView: TextView
+    private lateinit var coverGlowView: View
     private lateinit var coverView: ImageView
+    private lateinit var authorSubView: TextView
+    private lateinit var bookTitleView: TextView
     private lateinit var speedBtn: TextView
     private lateinit var back15Btn: TextView
     private lateinit var playPauseBtn: ImageView
@@ -292,11 +295,49 @@ class MainActivity : Activity(), SensorEventListener {
         val savedBookTitle = prefs.getString("last_book_title", null)
         val savedPos = prefs.getLong("last_pos", 0L)
         if (!savedBookTitle.isNullOrEmpty()) {
-            bookTitleView.text = savedBookTitle
+            applyBookHeaderText(savedBookTitle)
             elapsedTimeView.text = formatTime(savedPos)
         }
 
         showTab(0)
+    }
+
+    private fun applyBookHeaderText(rawTitle: String) {
+        val clean = rawTitle.trim()
+        if (clean.isEmpty() || clean == "Книга не выбрана") {
+            topHeaderView.text = ""
+            authorSubView.text = ""
+            bookTitleView.text = "Книга не выбрана"
+            return
+        }
+
+        val parts = clean.split(Regex("\\s*[—–-]\\s*|\\s*/\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size >= 2) {
+            topHeaderView.text = parts.first()
+            authorSubView.text = parts.first()
+            bookTitleView.text = parts.drop(1).joinToString(" — ")
+        } else {
+            topHeaderView.text = clean
+            authorSubView.text = ""
+            bookTitleView.text = clean
+        }
+        authorSubView.visibility = if (authorSubView.text.isNullOrEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun getActiveBookLookupTitle(): String {
+        val titleText = bookTitleView.text?.toString()?.trim() ?: ""
+        val authorText = authorSubView.text?.toString()?.trim() ?: ""
+        return when {
+            titleText.isNotEmpty() && titleText != "Книга не выбрана" && titleText != "Аудиокнига" -> {
+                if (authorText.isNotEmpty() && !titleText.contains(authorText, ignoreCase = true)) {
+                    "$authorText - $titleText"
+                } else {
+                    titleText
+                }
+            }
+            authorText.isNotEmpty() -> authorText
+            else -> ""
+        }
     }
 
     private fun updateLibraryFolderLabel() {
@@ -657,7 +698,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         contentContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(36), dp(20), dp(12))
+            setPadding(dp(20), dp(28), dp(20), dp(10))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -674,24 +715,23 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        bookTitleView = TextView(this).apply {
-            text = "Книга не выбрана"
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            maxLines = 2
+        topHeaderView = TextView(this).apply {
+            text = ""
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(12), dp(4), dp(12), dp(6))
             setOnClickListener {
-                val title = text?.toString()?.trim() ?: ""
-                if (title.isNotEmpty() && title != "Книга не выбрана" && title != "Аудиокнига") {
-                    showBookInfoDialog(title, forceRefresh = false)
+                val query = getActiveBookLookupTitle()
+                if (query.isNotEmpty()) {
+                    showBookInfoDialog(query, forceRefresh = false)
                 }
             }
         }
 
-        val coverWrapper = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
+        val coverWrapper = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -699,20 +739,63 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        val coverSize = dp(275)
+        val glowSize = dp(336)
+        coverGlowView = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(glowSize, glowSize, Gravity.CENTER)
+        }
+
+        val coverSize = dp(304)
         coverView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setImageResource(android.R.drawable.ic_media_play)
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(16).toFloat())
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(20).toFloat())
                 }
             }
             clipToOutline = true
-            layoutParams = LinearLayout.LayoutParams(coverSize, coverSize)
+            layoutParams = FrameLayout.LayoutParams(coverSize, coverSize, Gravity.CENTER)
             setOnClickListener { showCoverMenu() }
         }
+
+        coverWrapper.addView(coverGlowView)
         coverWrapper.addView(coverView)
+
+        val metaBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(16), dp(8), dp(16), dp(6))
+            setOnClickListener {
+                val query = getActiveBookLookupTitle()
+                if (query.isNotEmpty()) {
+                    showBookInfoDialog(query, forceRefresh = false)
+                }
+            }
+        }
+
+        authorSubView = TextView(this).apply {
+            text = ""
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            letterSpacing = 0.02f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+        }
+
+        bookTitleView = TextView(this).apply {
+            text = "Книга не выбрана"
+            textSize = 11.5f
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            letterSpacing = 0.03f
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, 0)
+        }
+
+        metaBlock.addView(authorSubView)
+        metaBlock.addView(bookTitleView)
 
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -722,7 +805,7 @@ class MainActivity : Activity(), SensorEventListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(18)
+                bottomMargin = dp(14)
             }
         }
 
@@ -796,7 +879,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         chapterBtn = TextView(this).apply {
             text = "☰  Выберите книгу в Библиотеке"
-            textSize = 15f
+            textSize = 14.5f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
@@ -807,7 +890,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         bookmarkBtn = TextView(this).apply {
             text = "🔖"
-            textSize = 19f
+            textSize = 18f
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(6), dp(12), dp(10))
             setOnClickListener { openBookmarksList() }
@@ -864,11 +947,12 @@ class MainActivity : Activity(), SensorEventListener {
             text = ""
             textSize = 12f
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(2), dp(8), dp(8))
+            setPadding(dp(8), dp(2), dp(8), dp(6))
         }
 
-        playerContainer.addView(bookTitleView)
+        playerContainer.addView(topHeaderView)
         playerContainer.addView(coverWrapper)
+        playerContainer.addView(metaBlock)
         playerContainer.addView(controlsRow)
         playerContainer.addView(chapterRow)
         playerContainer.addView(seekBar, LinearLayout.LayoutParams(
@@ -1285,6 +1369,36 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(rootLayout)
     }
 
+    private fun updateCoverGlowColor(bmp: Bitmap?) {
+        val t = currentTheme
+        val glowColor = if (bmp != null) {
+            val scaled = Bitmap.createScaledBitmap(bmp, 16, 16, true)
+            val px = scaled.getPixel(8, 8)
+            if (scaled != bmp) scaled.recycle()
+            val r = (Color.red(px) + Color.red(t.activeCard)) / 2
+            val g = (Color.green(px) + Color.green(t.activeCard)) / 2
+            val b = (Color.blue(px) + Color.blue(t.activeCard)) / 2
+            Color.argb(66, r, g, b)
+        } else {
+            Color.argb(56, Color.red(t.activeCard), Color.green(t.activeCard), Color.blue(t.activeCard))
+        }
+
+        coverGlowView.background = GradientDrawable().apply {
+            cornerRadius = dp(34).toFloat()
+            setColor(glowColor)
+        }
+    }
+
+    private fun setCoverBitmap(bmp: Bitmap?) {
+        if (bmp != null) {
+            coverView.setImageBitmap(bmp)
+            updateCoverGlowColor(bmp)
+        } else {
+            coverView.setImageResource(android.R.drawable.ic_media_play)
+            updateCoverGlowColor(null)
+        }
+    }
+
     private fun rebuildFilterChips() {
         if (!::filterChipsRow.isInitialized) return
         filterChipsRow.removeAllViews()
@@ -1512,10 +1626,10 @@ class MainActivity : Activity(), SensorEventListener {
 
             Обложки и Библиотека:
             • Переключатель «⊞ / ☰» в Библиотеке меняет вид между сеткой блоков с обложками и полупрозрачным прогрессом и обычным списком.
-            • Долгое нажатие на книгу задаёт статус (*«Планирую»*, *«Забросил»* и др.), а выбор общей папки Books перенесён в Настройки.
+            • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
 
             Описание и пересказ сюжета:
-            • Нажмите на название книги сверху, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
+            • Нажмите на название книги или строку автора, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
 
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
@@ -1545,7 +1659,7 @@ class MainActivity : Activity(), SensorEventListener {
         val chapTitle = m4bCh?.title
             ?: player?.currentMediaItem?.mediaMetadata?.title?.toString()
             ?: "Глава ${chapIdx + 1}"
-        val bookTitle = bookTitleView.text?.toString() ?: "Аудиокнига"
+        val bookTitle = getActiveBookLookupTitle().ifEmpty { "Аудиокнига" }
 
         bookmarksManager.showBookmarksDialog(
             bookUri = bookUri,
@@ -1655,7 +1769,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun showCoverMenu() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val bookUri = prefs.getString("folder_uri", null) ?: return
-        val bookTitle = bookTitleView.text?.toString()?.trim() ?: ""
+        val bookTitle = getActiveBookLookupTitle()
 
         val options = arrayOf(
             "Выбрать из галереи",
@@ -1676,7 +1790,7 @@ class MainActivity : Activity(), SensorEventListener {
                         startActivityForResult(intent, 201)
                     }
                     1 -> {
-                        if (bookTitle.isNotEmpty() && bookTitle != "Книга не выбрана") {
+                        if (bookTitle.isNotEmpty()) {
                             Toast.makeText(this, "Ищу обложку...", Toast.LENGTH_SHORT).show()
                             searchOnlineCover(bookUri, bookTitle, asCustom = true)
                         }
@@ -1705,7 +1819,7 @@ class MainActivity : Activity(), SensorEventListener {
                     bookCoverCache[bookUriStr] = bmp
                     syncWidgetCover(bmp)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
+                        if (!isFinishing && !isDestroyed) setCoverBitmap(bmp)
                     }
                     return@Thread
                 }
@@ -1718,7 +1832,7 @@ class MainActivity : Activity(), SensorEventListener {
                 bookCoverCache[bookUriStr] = savedBmp
                 syncWidgetCover(savedBmp)
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) coverView.setImageBitmap(savedBmp)
+                    if (!isFinishing && !isDestroyed) setCoverBitmap(savedBmp)
                 }
                 return@Thread
             }
@@ -1751,7 +1865,7 @@ class MainActivity : Activity(), SensorEventListener {
             syncWidgetCover(savedBmp)
             runOnUiThread {
                 if (!isFinishing && !isDestroyed) {
-                    coverView.setImageBitmap(savedBmp)
+                    setCoverBitmap(savedBmp)
                     if (isGridViewMode) renderFilteredLibrary()
                     if (notifyIfNotFound) {
                         Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
@@ -2400,7 +2514,10 @@ class MainActivity : Activity(), SensorEventListener {
         window.statusBarColor = t.bg
         window.navigationBarColor = t.navBg
 
-        bookTitleView.setTextColor(t.textPrimary)
+        topHeaderView.setTextColor(t.textPrimary)
+        authorSubView.setTextColor(t.textPrimary)
+        bookTitleView.setTextColor(t.textSecondary)
+        updateCoverGlowColor(null)
         coverView.setBackgroundColor(t.surface)
         speedBtn.setTextColor(t.textPrimary)
         back15Btn.setTextColor(t.textPrimary)
@@ -2411,7 +2528,7 @@ class MainActivity : Activity(), SensorEventListener {
             setColor(t.accentBg)
         }
         chapterBtn.setTextColor(t.textPrimary)
-        bookmarkBtn.setTextColor(t.textPrimary)
+        bookmarkBtn.setTextColor(t.textSecondary)
         elapsedTimeView.setTextColor(t.textSecondary)
         remainingTimeView.setTextColor(t.textSecondary)
         seekBar.progressTintList = ColorStateList.valueOf(t.accentBg)
@@ -2780,7 +2897,7 @@ class MainActivity : Activity(), SensorEventListener {
                     syncWidgetCover(savedBmp)
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed) {
-                            coverView.setImageBitmap(savedBmp)
+                            setCoverBitmap(savedBmp)
                             if (isGridViewMode) renderFilteredLibrary()
                             Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                         }
@@ -3225,7 +3342,7 @@ class MainActivity : Activity(), SensorEventListener {
                 collectAudioFiles(dir, files)
 
                 runOnUiThread {
-                    bookTitleView.text = bookName
+                    applyBookHeaderText(bookName)
                     getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
                         .edit()
                         .putString("last_book_title", bookName)
@@ -3277,7 +3394,7 @@ class MainActivity : Activity(), SensorEventListener {
         val itemMeta = player.currentMediaItem?.mediaMetadata
         val bookTitle = itemMeta?.artist?.toString() ?: "Аудиокнига"
         if (itemMeta != null) {
-            bookTitleView.text = bookTitle
+            applyBookHeaderText(bookTitle)
             val m4bCh = currentM4bChapter(player.currentPosition.coerceAtLeast(0L))
             val chapterName = m4bCh?.title
                 ?: itemMeta.title?.toString()
@@ -3303,7 +3420,7 @@ class MainActivity : Activity(), SensorEventListener {
                         if (bookUri != null) bookCoverCache[bookUri] = bmp
                         syncWidgetCover(bmp)
                         runOnUiThread {
-                            if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
+                            if (!isFinishing && !isDestroyed) setCoverBitmap(bmp)
                         }
                     }
                 }.start()
@@ -3312,14 +3429,15 @@ class MainActivity : Activity(), SensorEventListener {
                     val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed && bmp != null) {
-                            coverView.setImageBitmap(bmp)
+                            setCoverBitmap(bmp)
                         }
                     }
                 }.start()
             } else {
-                coverView.setImageResource(android.R.drawable.ic_media_play)
-                if (bookUri != null && bookTitle != "Аудиокнига") {
-                    loadFallbackCoverAsync(bookUri, bookTitle)
+                setCoverBitmap(null)
+                val lookup = getActiveBookLookupTitle()
+                if (bookUri != null && lookup.isNotEmpty()) {
+                    loadFallbackCoverAsync(bookUri, lookup)
                 }
             }
         }
