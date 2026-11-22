@@ -775,7 +775,7 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        val glowSize = dp(356)
+        val glowSize = dp(390)
         coverGlowView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = FrameLayout.LayoutParams(glowSize, glowSize, Gravity.CENTER)
@@ -1431,23 +1431,28 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildSoftGlowBitmap(baseColor: Int): Bitmap {
-        val size = 240
+        val size = 320
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val cx = size * 0.5f
         val cy = size * 0.5f
         val radius = size * 0.5f
 
-        val inner = Color.argb(115, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
-        val mid = Color.argb(46, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
-        val edge = Color.argb(0, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+        val r = Color.red(baseColor)
+        val g = Color.green(baseColor)
+        val b = Color.blue(baseColor)
+
+        val inner = Color.argb(190, r, g, b)
+        val mid = Color.argb(95, r, g, b)
+        val outer = Color.argb(28, r, g, b)
+        val edge = Color.argb(0, r, g, b)
 
         val shader = RadialGradient(
             cx,
             cy,
             radius,
-            intArrayOf(inner, mid, edge),
-            floatArrayOf(0.0f, 0.58f, 1.0f),
+            intArrayOf(inner, mid, outer, edge),
+            floatArrayOf(0.0f, 0.52f, 0.78f, 1.0f),
             Shader.TileMode.CLAMP
         )
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1461,20 +1466,35 @@ class MainActivity : Activity(), SensorEventListener {
         val t = currentTheme
         val glowSourceColor = when {
             bmp != null -> {
-                val scaled = Bitmap.createScaledBitmap(bmp, 16, 16, true)
-                val px = scaled.getPixel(8, 8)
+                val scaled = Bitmap.createScaledBitmap(bmp, 24, 24, true)
+                var sumR = 0
+                var sumG = 0
+                var sumB = 0
+                var count = 0
+                for (y in 4 until 20) {
+                    for (x in 4 until 20) {
+                        val px = scaled.getPixel(x, y)
+                        sumR += Color.red(px)
+                        sumG += Color.green(px)
+                        sumB += Color.blue(px)
+                        count++
+                    }
+                }
                 if (scaled != bmp) scaled.recycle()
+                val avgR = (sumR / count.coerceAtLeast(1))
+                val avgG = (sumG / count.coerceAtLeast(1))
+                val avgB = (sumB / count.coerceAtLeast(1))
                 if (t.id == "dark_green") {
                     Color.rgb(
-                        (Color.red(px) + 75) / 2,
-                        (Color.green(px) + 185) / 2,
-                        (Color.blue(px) + 105) / 2
+                        (avgR + 102) / 2,
+                        (avgG + 187) / 2,
+                        (avgB + 106) / 2
                     )
                 } else {
-                    px
+                    Color.rgb(avgR, avgG, avgB)
                 }
             }
-            t.id == "dark_green" -> Color.parseColor("#4CAF50")
+            t.id == "dark_green" -> Color.parseColor("#66BB6A")
             else -> t.accentBg
         }
 
@@ -2611,7 +2631,8 @@ class MainActivity : Activity(), SensorEventListener {
         topHeaderView.setTextColor(t.textPrimary)
         authorSubView.setTextColor(t.textPrimary)
         bookTitleView.setTextColor(t.textSecondary)
-        updateCoverGlowColor(null)
+        val currentCoverBmp = (coverView.drawable as? BitmapDrawable)?.bitmap
+        updateCoverGlowColor(currentCoverBmp)
         coverView.setBackgroundColor(t.surface)
         speedBtn.setTextColor(t.textPrimary)
         back15Btn.setColorFilter(t.textPrimary, PorterDuff.Mode.SRC_IN)
