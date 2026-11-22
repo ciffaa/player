@@ -215,7 +215,6 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var libraryListLayout: LinearLayout
     private var cachedBooks: List<BookEntry> = emptyList()
     private val bookCoverCache = mutableMapOf<String, Bitmap?>()
-    private var isFetchingLibraryCovers = false
     private var libraryCoverFetchGeneration = 0
 
     private lateinit var settingsTitleView: TextView
@@ -349,18 +348,32 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun isCycleMetaFolder(name: String): Boolean {
+        val lower = name.trim().lowercase()
+        return lower == "цикл" ||
+            lower == "серия" ||
+            lower == "сборник" ||
+            lower == "антология" ||
+            lower.startsWith("цикл ") ||
+            lower.startsWith("серия ")
+    }
+
     private fun extractAuthorFromBookUri(bookUriStr: String?): String {
         if (bookUriStr.isNullOrEmpty()) return ""
         val decoded = Uri.decode(bookUriStr)
         val pathPart = decoded.substringAfterLast(':')
         val segments = pathPart.split('/').map { it.trim() }.filter { it.isNotEmpty() }
-        if (segments.size >= 3) {
-            val candidate = segments[segments.size - 2]
-            if (!candidate.equals("Books", ignoreCase = true) &&
-                !candidate.equals("Audiobooks", ignoreCase = true)
+        for (i in (segments.size - 2) downTo 0) {
+            val candidate = segments[i]
+            if (candidate.equals("Books", ignoreCase = true) ||
+                candidate.equals("Audiobooks", ignoreCase = true) ||
+                candidate.equals("Audio", ignoreCase = true) ||
+                candidate.equals("Книги", ignoreCase = true) ||
+                isCycleMetaFolder(candidate)
             ) {
-                return candidate
+                continue
             }
+            return candidate
         }
         return ""
     }
@@ -1791,6 +1804,7 @@ class MainActivity : Activity(), SensorEventListener {
             • Нажатие на название главы открывает список глав. Для книг одним файлом .m4b автоматически считываются встроенные главы по таймкодам.
 
             Обложки и Библиотека:
+            • Родная обложка (из папки книги или тегов аудиофайла) всегда имеет приоритет; поиск в интернете запускается только если родной обложки нет.
             • Переключатель «⊞ / ☰» в Библиотеке меняет вид между сеткой блоков с обложками и полупрозрачным прогрессом и обычным списком.
             • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
 
@@ -1873,14 +1887,46 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun getCoverFile(bookUriStr: String, custom: Boolean): File {
         val dir = File(filesDir, "covers").apply { if (!exists()) mkdirs() }
-        val prefix = if (custom) "custom_" else "auto_"
+        val prefix = if (custom) "custom_v4_" else "auto_v4_"
         return File(dir, "$prefix${bookUriStr.hashCode()}.jpg")
     }
 
-    private fun loadCachedBookCoverBitmap(bookUriStr: String): Bitmap? {
-        if (bookCoverCache.containsKey(bookUriStr)) {
-            return bookCoverCache[bookUriStr]
+    private fun extractEmbeddedCoverFromBook(treeUri: Uri): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return null
+            val files = mutableListOf<DocumentFile>()
+            collectAudioFiles(dir, files)
+            for (f in files.take(3)) {
+                try {
+                    retriever.setDataSource(this, f.uri)
+                    val pic = retriever.embeddedPicture
+                    if (pic != null && pic.isNotEmpty()) {
+                        val bmp = BitmapFactory.decodeByteArray(pic, 0, pic.size)
+                        if (bmp != null) return bmp
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
         }
+    }
+
+    private fun findNativeBookCover(bookUriStr: String): Bitmap? {
+        val treeUri = Uri.parse(bookUriStr)
+        return findCoverInFolder(treeUri) ?: extractEmbeddedCoverFromBook(treeUri)
+    }
+
+    private fun loadCachedBookCoverBitmap(bookUriStr: String): Bitmap? {
+        bookCoverCache[bookUriStr]?.let { return it }
+
         val customFile = getCoverFile(bookUriStr, custom = true)
         if (customFile.exists()) {
             val bmp = BitmapFactory.decodeFile(customFile.absolutePath)
@@ -1889,6 +1935,16 @@ class MainActivity : Activity(), SensorEventListener {
                 return bmp
             }
         }
+
+        val nativeBmp = findNativeBookCover(bookUriStr)
+        if (nativeBmp != null) {
+            val nativeFile = getCoverFile(bookUriStr, custom = false)
+            saveBitmapToFile(nativeBmp, nativeFile, 600)
+            val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
+            bookCoverCache[bookUriStr] = savedBmp
+            return savedBmp
+        }
+
         val autoFile = getCoverFile(bookUriStr, custom = false)
         if (autoFile.exists()) {
             val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
@@ -1897,32 +1953,43 @@ class MainActivity : Activity(), SensorEventListener {
                 return bmp
             }
         }
-        val folderBmp = findCoverInFolder(Uri.parse(bookUriStr))
-        if (folderBmp != null) {
-            saveBitmapToFile(folderBmp, autoFile, 600)
-            val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: folderBmp
-            bookCoverCache[bookUriStr] = savedBmp
-            return savedBmp
-        }
-        bookCoverCache[bookUriStr] = null
         return null
+    }
+
+    private fun stripSeriesMetaWords(raw: String): String {
+        return raw
+            .replace(Regex("\\b(цикл|серия|сборник|антология)\\b", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(том|книга|часть|выпуск|ч\\.|т\\.|кн\\.)\\s*\\d+\\b", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun buildCoverSearchQueries(bookTitle: String, bookUriStr: String? = null): List<String> {
         val authorFromPath = extractAuthorFromBookUri(bookUriStr)
-        val baseClean = normalizeQuery(bookTitle)
-        val withoutSeriesOrNum = baseClean
-            .replace(Regex("\\b(том|книга|часть|выпуск|ч\\.|т\\.|кн\\.)\\s*\\d+\\b", RegexOption.IGNORE_CASE), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+        val parts = bookTitle.split(Regex("\\s*[—–-]\\s*|\\s*/\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+        val specificBookPart = if (parts.size >= 2 && !isCycleMetaFolder(parts.last())) {
+            parts.last()
+        } else {
+            bookTitle
+        }
+
+        val cleanBookOnly = stripSeriesMetaWords(normalizeQuery(specificBookPart))
+        val cleanFull = stripSeriesMetaWords(normalizeQuery(bookTitle))
+        val cleanAuthor = stripSeriesMetaWords(normalizeQuery(authorFromPath))
+        val rawFallback = normalizeQuery(bookTitle)
 
         val list = mutableListOf<String>()
-        if (authorFromPath.isNotEmpty() && !baseClean.contains(authorFromPath, ignoreCase = true)) {
-            list.add("$authorFromPath $baseClean".trim())
+        if (cleanBookOnly.isNotEmpty() && cleanAuthor.isNotEmpty() && !cleanBookOnly.contains(cleanAuthor, ignoreCase = true)) {
+            list.add("$cleanBookOnly $cleanAuthor".trim())
         }
-        if (baseClean.isNotEmpty()) list.add(baseClean)
-        if (withoutSeriesOrNum.isNotEmpty() && !list.contains(withoutSeriesOrNum)) {
-            list.add(withoutSeriesOrNum)
+        if (cleanBookOnly.isNotEmpty() && !list.contains(cleanBookOnly)) {
+            list.add(cleanBookOnly)
+        }
+        if (cleanFull.isNotEmpty() && !list.contains(cleanFull)) {
+            list.add(cleanFull)
+        }
+        if (rawFallback.isNotEmpty() && !list.contains(rawFallback)) {
+            list.add(rawFallback)
         }
         return list
     }
@@ -1947,46 +2014,54 @@ class MainActivity : Activity(), SensorEventListener {
         if (missing.isEmpty()) return
 
         val gen = ++libraryCoverFetchGeneration
-        if (isFetchingLibraryCovers) return
-        isFetchingLibraryCovers = true
 
         Thread {
-            try {
-                for (book in missing) {
-                    if (isFinishing || isDestroyed || gen != libraryCoverFetchGeneration) return@Thread
-                    val autoFile = getCoverFile(book.uriString, custom = false)
-                    if (autoFile.exists()) {
-                        val existingBmp = BitmapFactory.decodeFile(autoFile.absolutePath)
-                        if (existingBmp != null) {
-                            bookCoverCache[book.uriString] = existingBmp
-                            runOnUiThread {
-                                if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1) {
-                                    renderFilteredLibrary()
-                                }
-                            }
-                            continue
+            for (book in missing) {
+                if (isFinishing || isDestroyed || gen != libraryCoverFetchGeneration) return@Thread
+                val autoFile = getCoverFile(book.uriString, custom = false)
+
+                val nativeBmp = findNativeBookCover(book.uriString)
+                if (nativeBmp != null) {
+                    saveBitmapToFile(nativeBmp, autoFile, 600)
+                    val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: nativeBmp
+                    bookCoverCache[book.uriString] = savedBmp
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
+                            renderFilteredLibrary()
                         }
                     }
+                    continue
+                }
 
-                    val fetched = fetchCoverBitmapForBook(book.title, book.uriString)
-                    if (fetched != null) {
-                        saveBitmapToFile(fetched, autoFile, 600)
-                        val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: fetched
-                        bookCoverCache[book.uriString] = savedBmp
+                if (autoFile.exists()) {
+                    val existingBmp = BitmapFactory.decodeFile(autoFile.absolutePath)
+                    if (existingBmp != null) {
+                        bookCoverCache[book.uriString] = existingBmp
                         runOnUiThread {
-                            if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1) {
+                            if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
                                 renderFilteredLibrary()
                             }
                         }
-                    }
-                    try {
-                        Thread.sleep(160L)
-                    } catch (_: InterruptedException) {
-                        return@Thread
+                        continue
                     }
                 }
-            } finally {
-                isFetchingLibraryCovers = false
+
+                val fetched = fetchCoverBitmapForBook(book.title, book.uriString)
+                if (fetched != null) {
+                    saveBitmapToFile(fetched, autoFile, 600)
+                    val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: fetched
+                    bookCoverCache[book.uriString] = savedBmp
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
+                            renderFilteredLibrary()
+                        }
+                    }
+                }
+                try {
+                    Thread.sleep(150L)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
             }
         }.start()
     }
@@ -2052,7 +2127,8 @@ class MainActivity : Activity(), SensorEventListener {
                         lastArtworkSize = -1
                         lastCoverBookUri = null
                         updateUI()
-                        Toast.makeText(this, "Обложка сброшена", Toast.LENGTH_SHORT).show()
+                        if (isGridViewMode) renderFilteredLibrary()
+                        Toast.makeText(this, "Обложка сброшена к родной", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -2061,6 +2137,22 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun loadFallbackCoverAsync(bookUriStr: String, bookTitle: String) {
         Thread {
+            val nativeBmp = findNativeBookCover(bookUriStr)
+            if (nativeBmp != null) {
+                val nativeFile = getCoverFile(bookUriStr, custom = false)
+                saveBitmapToFile(nativeBmp, nativeFile, 600)
+                val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
+                bookCoverCache[bookUriStr] = savedBmp
+                syncWidgetCover(savedBmp)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        setCoverBitmap(savedBmp)
+                        if (isGridViewMode) renderFilteredLibrary()
+                    }
+                }
+                return@Thread
+            }
+
             val autoFile = getCoverFile(bookUriStr, custom = false)
             if (autoFile.exists()) {
                 val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
@@ -2068,22 +2160,13 @@ class MainActivity : Activity(), SensorEventListener {
                     bookCoverCache[bookUriStr] = bmp
                     syncWidgetCover(bmp)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) setCoverBitmap(bmp)
+                        if (!isFinishing && !isDestroyed) {
+                            setCoverBitmap(bmp)
+                            if (isGridViewMode) renderFilteredLibrary()
+                        }
                     }
                     return@Thread
                 }
-            }
-
-            val folderBmp = findCoverInFolder(Uri.parse(bookUriStr))
-            if (folderBmp != null) {
-                saveBitmapToFile(folderBmp, autoFile, 600)
-                val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: folderBmp
-                bookCoverCache[bookUriStr] = savedBmp
-                syncWidgetCover(savedBmp)
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) setCoverBitmap(savedBmp)
-                }
-                return@Thread
             }
 
             if (attemptedCoverSearch.add(bookUriStr)) {
@@ -2168,7 +2251,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun fetchCoverFromGoogleBooks(query: String): Bitmap? {
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&maxResults=5")
+            val url = URL("https://www.googleapis.com/books/v1/volumes?q=$encoded&maxResults=8")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 8000
                 readTimeout = 8000
@@ -2201,7 +2284,7 @@ class MainActivity : Activity(), SensorEventListener {
         for (media in medias) {
             try {
                 val encoded = URLEncoder.encode(query, "UTF-8")
-                val url = URL("https://itunes.apple.com/search?term=$encoded&media=$media&limit=3")
+                val url = URL("https://itunes.apple.com/search?term=$encoded&media=$media&limit=5")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
@@ -3730,20 +3813,44 @@ class MainActivity : Activity(), SensorEventListener {
                         }
                     }
                 }.start()
-            } else if (artBytes != null) {
-                Thread {
-                    val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
-                    runOnUiThread {
-                        if (!isFinishing && !isDestroyed && bmp != null) {
-                            setCoverBitmap(bmp)
-                        }
-                    }
-                }.start()
             } else {
-                setCoverBitmap(null)
-                val lookup = getActiveBookLookupTitle()
-                if (bookUri != null && lookup.isNotEmpty()) {
-                    loadFallbackCoverAsync(bookUri, lookup)
+                val nativeBmp = bookUri?.let { findNativeBookCover(it) }
+                if (nativeBmp != null) {
+                    if (bookUri != null) {
+                        val nativeFile = getCoverFile(bookUri, custom = false)
+                        saveBitmapToFile(nativeBmp, nativeFile, 600)
+                        val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
+                        bookCoverCache[bookUri] = savedBmp
+                        syncWidgetCover(savedBmp)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                setCoverBitmap(savedBmp)
+                                if (isGridViewMode) renderFilteredLibrary()
+                            }
+                        }
+                    } else {
+                        setCoverBitmap(nativeBmp)
+                    }
+                } else if (artBytes != null) {
+                    Thread {
+                        val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed && bmp != null) {
+                                setCoverBitmap(bmp)
+                                if (bookUri != null) {
+                                    val nativeFile = getCoverFile(bookUri, custom = false)
+                                    saveBitmapToFile(bmp, nativeFile, 600)
+                                    bookCoverCache[bookUri] = bmp
+                                }
+                            }
+                        }
+                    }.start()
+                } else {
+                    setCoverBitmap(null)
+                    val lookup = getActiveBookLookupTitle()
+                    if (bookUri != null && lookup.isNotEmpty()) {
+                        loadFallbackCoverAsync(bookUri, lookup)
+                    }
                 }
             }
         }
