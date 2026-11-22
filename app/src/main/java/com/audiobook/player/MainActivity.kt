@@ -1809,7 +1809,7 @@ class MainActivity : Activity(), SensorEventListener {
             • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
 
             Описание и пересказ сюжета:
-            • Нажмите на верхнюю строку названия книги, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
+            • Нажмите на верхнюю строку названия книги, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей отметки без спойлеров.
 
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
@@ -2395,11 +2395,11 @@ class MainActivity : Activity(), SensorEventListener {
             val curIdx = player.currentMediaItemIndex + 1
             val total = player.mediaItemCount
             val title = player.currentMediaItem?.mediaMetadata?.title?.toString()
-                ?: "Глава $curIdx"
+                ?: "Фрагмент $curIdx"
             return Triple(curIdx, total, title)
         }
         val savedIdx = prefs.getInt("last_index", 0) + 1
-        return Triple(savedIdx, 0, "Глава $savedIdx")
+        return Triple(savedIdx, 0, "Фрагмент $savedIdx")
     }
 
     private fun showStoryRecapDialog(bookTitle: String, forceRefresh: Boolean = false) {
@@ -2408,7 +2408,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (apiKey.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Освежить память")
-                .setMessage("Для пересказа событий до текущей главы нужен API-ключ Gemini. Добавьте его в Настройках.")
+                .setMessage("Для пересказа событий до текущей отметки нужен API-ключ Gemini. Добавьте его в Настройках.")
                 .setPositiveButton("В Настройки") { _, _ -> showTab(2) }
                 .setNegativeButton("Закрыть", null)
                 .show()
@@ -2422,11 +2422,11 @@ class MainActivity : Activity(), SensorEventListener {
             ((elapsedMs.toDouble() / totalMs.toDouble()) * 100.0).toInt().coerceIn(0, 100)
         } else -1
 
-        val cacheKey = "recap_${bookTitle}_${chapterNum}_${chapterTitle}"
+        val cacheKey = "recap_v2_${bookTitle}_${chapterNum}_${pct}"
         val cached = prefs.getString(cacheKey, null)
 
         val subtitleInfo = buildString {
-            append("Глава $chapterNum")
+            append("Фрагмент $chapterNum")
             if (totalChapters > 0) append(" из $totalChapters")
             if (pct >= 0) append(" ($pct%)")
         }
@@ -2445,7 +2445,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         val loadingDialog = AlertDialog.Builder(this)
             .setTitle("Освежить память • $subtitleInfo")
-            .setMessage("Вспоминаю события до главы «$chapterTitle»...")
+            .setMessage("Вспоминаю завязку и события без спойлеров...")
             .setNegativeButton("Отмена", null)
             .show()
 
@@ -2500,16 +2500,20 @@ class MainActivity : Activity(), SensorEventListener {
         apiKey: String
     ): Pair<String?, String?> {
         val progressDesc = buildString {
-            append("текущая глава №$chapterNum")
-            if (totalChapters > 0) append(" из $totalChapters")
-            append(" («$chapterTitle»)")
-            if (percent >= 0) append(", прослушано примерно $percent% книги")
+            append("прослушано примерно ")
+            if (percent >= 0) append("$percent% книги") else append("часть книги")
+            append(" (аудиофайл №$chapterNum")
+            if (totalChapters > 0) append(" из $totalChapters технических нарезок, имена файлов не соответствуют главам книги")
+            append(", текущая метка «$chapterTitle»)")
         }
         val prompt = """
             Книга по названию папки/файла: "$rawTitle".
-            Отметка слушателя: $progressDesc.
-            Напиши по-русски без Markdown (без *, #, **) краткое напоминание событий ДО начала этой главы без спойлеров к текущей и будущим главам.
-            Формат: до 4 коротких пунктов с • в начале строки (герои, завязка и ключевые события пройденной части). Если не уверен — ответь ровно: НЕИЗВЕСТНО.
+            Позиция слушателя: $progressDesc.
+            ВНИМАНИЕ — СТРОГИЕ ПРАВИЛА БЕЗ СПОЙЛЕРОВ:
+            1. Не опирайся на номер аудиофайла как на номер главы книги — это техническая нарезка. Ориентируйся только на долю прослушанной книги и общую завязку.
+            2. НИКАКИХ спойлеров к дальнейшему сюжету, развязкам, появлению ключевых угроз/поворотам, которые слушатель ещё не мог застать или к которым сюжет только подводит.
+            3. Не раскрывай тайны, интриги и исходы конфликтов — опиши только вводные данные, основных персонажей и общую исходную ситуацию книги.
+            4. Пиши по-русски без Markdown (без *, #, **), до 3 коротких пунктов с • в начале строки. Если не уверен — ответь ровно: НЕИЗВЕСТНО.
         """.trimIndent()
 
         return callGeminiText(prompt, apiKey)
