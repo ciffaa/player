@@ -215,6 +215,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var libraryListLayout: LinearLayout
     private var cachedBooks: List<BookEntry> = emptyList()
     private val bookCoverCache = mutableMapOf<String, Bitmap?>()
+    private val gridCoverViews = mutableMapOf<String, ImageView>()
     private var libraryCoverFetchGeneration = 0
 
     private lateinit var settingsTitleView: TextView
@@ -1924,6 +1925,20 @@ class MainActivity : Activity(), SensorEventListener {
         return findCoverInFolder(treeUri) ?: extractEmbeddedCoverFromBook(treeUri)
     }
 
+    private fun applyCoverToGridTile(bookUriStr: String, bmp: Bitmap?) {
+        val img = gridCoverViews[bookUriStr] ?: return
+        val t = currentTheme
+        if (bmp != null) {
+            img.scaleType = ImageView.ScaleType.CENTER_CROP
+            img.clearColorFilter()
+            img.setImageBitmap(bmp)
+        } else {
+            img.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            img.setImageResource(android.R.drawable.ic_media_play)
+            img.setColorFilter(t.textSecondary, PorterDuff.Mode.SRC_IN)
+        }
+    }
+
     private fun loadCachedBookCoverBitmap(bookUriStr: String): Bitmap? {
         bookCoverCache[bookUriStr]?.let { return it }
 
@@ -2028,7 +2043,7 @@ class MainActivity : Activity(), SensorEventListener {
                     bookCoverCache[targetUri] = savedBmp
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
-                            renderFilteredLibrary()
+                            applyCoverToGridTile(targetUri, savedBmp)
                         }
                     }
                     continue
@@ -2040,7 +2055,7 @@ class MainActivity : Activity(), SensorEventListener {
                         bookCoverCache[targetUri] = existingBmp
                         runOnUiThread {
                             if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
-                                renderFilteredLibrary()
+                                applyCoverToGridTile(targetUri, existingBmp)
                             }
                         }
                         continue
@@ -2054,7 +2069,7 @@ class MainActivity : Activity(), SensorEventListener {
                     bookCoverCache[targetUri] = savedBmp
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
-                            renderFilteredLibrary()
+                            applyCoverToGridTile(targetUri, savedBmp)
                         }
                     }
                 }
@@ -2128,8 +2143,8 @@ class MainActivity : Activity(), SensorEventListener {
                         lastArtworkSize = -1
                         lastCoverBookUri = null
                         setCoverBitmap(null)
+                        applyCoverToGridTile(bookUri, null)
                         loadFallbackCoverAsync(bookUri, bookTitle)
-                        if (isGridViewMode) renderFilteredLibrary()
                         Toast.makeText(this, "Обложка сброшена к родной", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -2153,7 +2168,7 @@ class MainActivity : Activity(), SensorEventListener {
                         syncWidgetCover(savedBmp)
                         setCoverBitmap(savedBmp)
                     }
-                    if (isGridViewMode) renderFilteredLibrary()
+                    applyCoverToGridTile(bookUriStr, savedBmp)
                 }
                 return@Thread
             }
@@ -2171,7 +2186,7 @@ class MainActivity : Activity(), SensorEventListener {
                             syncWidgetCover(bmp)
                             setCoverBitmap(bmp)
                         }
-                        if (isGridViewMode) renderFilteredLibrary()
+                        applyCoverToGridTile(bookUriStr, bmp)
                     }
                     return@Thread
                 }
@@ -2209,7 +2224,7 @@ class MainActivity : Activity(), SensorEventListener {
                     syncWidgetCover(savedBmp)
                     setCoverBitmap(savedBmp)
                 }
-                if (isGridViewMode) renderFilteredLibrary()
+                applyCoverToGridTile(bookUriStr, savedBmp)
                 if (notifyIfNotFound && currentActiveUri == bookUriStr) {
                     Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
                 }
@@ -3270,7 +3285,7 @@ class MainActivity : Activity(), SensorEventListener {
                             syncWidgetCover(savedBmp)
                             setCoverBitmap(savedBmp)
                         }
-                        if (isGridViewMode) renderFilteredLibrary()
+                        applyCoverToGridTile(bookUri, savedBmp)
                         Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                     }
                 } catch (_: Exception) {
@@ -3310,6 +3325,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         libraryListLayout.removeAllViews()
+        gridCoverViews.clear()
         if (cachedBooks.isEmpty()) {
             libraryStatusView.text = "В выбранной папке не найдено аудиокниг"
             return
@@ -3401,7 +3417,7 @@ class MainActivity : Activity(), SensorEventListener {
             libraryFilters.firstOrNull { it.id == id }?.label
         }
         val t = currentTheme
-        val tileHeight = dp(170)
+        val tileHeight = dp(184)
 
         val frame = FrameLayout(this).apply {
             background = GradientDrawable().apply {
@@ -3441,6 +3457,7 @@ class MainActivity : Activity(), SensorEventListener {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         }
+        gridCoverViews[book.uriString] = img
         frame.addView(img)
 
         val progressRatio = if (savedIdx >= 0) {
@@ -3451,8 +3468,15 @@ class MainActivity : Activity(), SensorEventListener {
 
         val overlayBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#B80B0D10"))
-            setPadding(dp(10), dp(7), dp(10), dp(8))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#00090C0A"),
+                    Color.parseColor("#B8090C0A"),
+                    Color.parseColor("#E6090C0A")
+                )
+            )
+            setPadding(dp(10), dp(18), dp(10), dp(8))
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -3484,7 +3508,9 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(0, dp(2), 0, dp(4))
         }
 
-        val barTrack = FrameLayout(this).apply {
+        val barTrack = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 100f
             background = GradientDrawable().apply {
                 cornerRadius = dp(3).toFloat()
                 setColor(Color.parseColor("#40FFFFFF"))
@@ -3495,26 +3521,14 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        if (progressRatio > 0f) {
+        val filledWeight = (progressRatio * 100f).coerceIn(0f, 100f)
+        if (filledWeight > 0f) {
             val barFill = View(this).apply {
                 background = GradientDrawable().apply {
                     cornerRadius = dp(3).toFloat()
                     setColor(t.accentBg)
                 }
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                ).apply {
-                    post {
-                        val fullW = barTrack.width
-                        if (fullW > 0) {
-                            layoutParams = FrameLayout.LayoutParams(
-                                (fullW * progressRatio).toInt().coerceAtLeast(dp(6)),
-                                FrameLayout.LayoutParams.MATCH_PARENT
-                            )
-                        }
-                    }
-                }
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, filledWeight)
             }
             barTrack.addView(barFill)
         }
