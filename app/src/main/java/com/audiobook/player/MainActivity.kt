@@ -34,6 +34,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -189,21 +190,26 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var remainingTimeView: TextView
     private lateinit var bookProgressTextView: TextView
 
-    private lateinit var pickLibraryBtn: Button
     private lateinit var searchBarContainer: LinearLayout
     private lateinit var searchInput: EditText
     private lateinit var clearSearchBtn: TextView
     private lateinit var filterRowLayout: LinearLayout
     private lateinit var filterChipsScroll: HorizontalScrollView
     private lateinit var filterChipsRow: LinearLayout
+    private lateinit var viewModeBtn: TextView
     private lateinit var editFiltersBtn: TextView
+    private var isGridViewMode = false
     private var libraryFilters: MutableList<LibraryFilterItem> = mutableListOf()
     private var selectedFilterId: String = "all"
     private lateinit var libraryStatusView: TextView
     private lateinit var libraryListLayout: LinearLayout
     private var cachedBooks: List<BookEntry> = emptyList()
+    private val bookCoverCache = mutableMapOf<String, Bitmap?>()
 
     private lateinit var settingsTitleView: TextView
+    private lateinit var librarySectionLabel: TextView
+    private lateinit var pickLibraryBtn: Button
+    private lateinit var libraryFolderPathView: TextView
     private lateinit var themeSectionLabel: TextView
     private lateinit var themeButtonsContainer: LinearLayout
     private lateinit var badgeSectionLabel: TextView
@@ -276,10 +282,12 @@ class MainActivity : Activity(), SensorEventListener {
 
         val savedBadgeId = prefs.getString("app_badge", "v1")
         currentBadge = badges.find { it.id == savedBadgeId } ?: badges[0]
+        isGridViewMode = prefs.getBoolean("library_grid_mode", false)
 
         loadLibraryFilters()
         buildUI()
         applyTheme()
+        updateLibraryFolderLabel()
 
         val savedBookTitle = prefs.getString("last_book_title", null)
         val savedPos = prefs.getLong("last_pos", 0L)
@@ -289,6 +297,19 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         showTab(0)
+    }
+
+    private fun updateLibraryFolderLabel() {
+        if (!::libraryFolderPathView.isInitialized) return
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val uriStr = prefs.getString("library_uri", null)
+        if (uriStr.isNullOrEmpty()) {
+            libraryFolderPathView.text = "Папка не выбрана — нажмите кнопку выше"
+        } else {
+            val decoded = Uri.decode(uriStr).substringAfterLast(':').substringAfterLast('/')
+            val label = decoded.ifEmpty { uriStr }
+            libraryFolderPathView.text = "Текущая папка: $label"
+        }
     }
 
     private fun isShakeToExtendEnabled(): Boolean {
@@ -872,17 +893,6 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        pickLibraryBtn = Button(this).apply {
-            text = "Выбрать общую папку Books"
-            setOnClickListener {
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                }
-                @Suppress("DEPRECATION")
-                startActivityForResult(intent, 200)
-            }
-        }
-
         searchInput = EditText(this).apply {
             hint = "Поиск по книге, автору или папке..."
             textSize = 14f
@@ -919,9 +929,7 @@ class MainActivity : Activity(), SensorEventListener {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(10)
-            }
+            )
             addView(searchInput)
             addView(clearSearchBtn)
         }
@@ -934,16 +942,38 @@ class MainActivity : Activity(), SensorEventListener {
         filterChipsScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
+                marginEnd = dp(6)
             }
             addView(filterChipsRow)
+        }
+
+        viewModeBtn = TextView(this).apply {
+            text = if (isGridViewMode) "☰" else "⊞"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(6)
+            }
+            setOnClickListener {
+                isGridViewMode = !isGridViewMode
+                getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("library_grid_mode", isGridViewMode)
+                    .apply()
+                viewModeBtn.text = if (isGridViewMode) "☰" else "⊞"
+                renderFilteredLibrary()
+            }
         }
 
         editFiltersBtn = TextView(this).apply {
             text = "✎"
             textSize = 15f
             gravity = Gravity.CENTER
-            setPadding(dp(11), dp(7), dp(11), dp(7))
+            setPadding(dp(10), dp(7), dp(10), dp(7))
             setOnClickListener { showManageFiltersDialog() }
         }
 
@@ -957,6 +987,7 @@ class MainActivity : Activity(), SensorEventListener {
                 topMargin = dp(8)
             }
             addView(filterChipsScroll)
+            addView(viewModeBtn)
             addView(editFiltersBtn)
         }
 
@@ -974,10 +1005,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
         scrollView.addView(libraryListLayout)
 
-        libraryContainer.addView(pickLibraryBtn, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
         libraryContainer.addView(searchBarContainer)
         libraryContainer.addView(filterRowLayout)
         libraryContainer.addView(libraryStatusView)
@@ -1010,10 +1037,32 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(4), dp(8), dp(4), dp(20))
         }
 
+        librarySectionLabel = TextView(this).apply {
+            text = "Библиотека"
+            textSize = 14f
+            setPadding(dp(4), 0, dp(4), dp(10))
+        }
+
+        pickLibraryBtn = Button(this).apply {
+            text = "Выбрать общую папку Books"
+            setOnClickListener {
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, 200)
+            }
+        }
+
+        libraryFolderPathView = TextView(this).apply {
+            textSize = 12f
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+        }
+
         themeSectionLabel = TextView(this).apply {
             text = "Тема оформления"
             textSize = 14f
-            setPadding(dp(4), 0, dp(4), dp(10))
+            setPadding(dp(4), dp(14), dp(4), dp(10))
         }
 
         themeButtonsContainer = LinearLayout(this).apply {
@@ -1168,6 +1217,12 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         settingsContainer.addView(settingsTitleView)
+        settingsContainer.addView(librarySectionLabel)
+        settingsContainer.addView(pickLibraryBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        settingsContainer.addView(libraryFolderPathView)
         settingsContainer.addView(themeSectionLabel)
         settingsContainer.addView(themeButtonsContainer)
         settingsContainer.addView(badgeSectionLabel)
@@ -1246,7 +1301,7 @@ class MainActivity : Activity(), SensorEventListener {
                 textSize = 13f
                 gravity = Gravity.CENTER
                 maxLines = 1
-                setPadding(dp(12), dp(7), dp(12), dp(7))
+                setPadding(dp(11), dp(7), dp(11), dp(7))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(10).toFloat()
                     setColor(if (selected) t.activeCard else t.surface)
@@ -1266,6 +1321,15 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
             filterChipsRow.addView(chip)
+        }
+
+        if (::viewModeBtn.isInitialized) {
+            viewModeBtn.text = if (isGridViewMode) "☰" else "⊞"
+            viewModeBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(if (isGridViewMode) t.activeCard else t.surface)
+            }
+            viewModeBtn.setTextColor(if (isGridViewMode) t.textPrimary else t.textSecondary)
         }
 
         if (::editFiltersBtn.isInitialized) {
@@ -1446,9 +1510,9 @@ class MainActivity : Activity(), SensorEventListener {
             Главы и M4B:
             • Нажатие на название главы открывает список глав. Для книг одним файлом .m4b автоматически считываются встроенные главы по таймкодам.
 
-            Обложки:
-            • Если обложки нет в аудиофайлах, плеер сам ищет картинку в папке книги, а затем в интернете.
-            • Нажатие на обложку открывает меню: выбрать картинку из галереи, найти в интернете заново или сбросить.
+            Обложки и Библиотека:
+            • Переключатель «⊞ / ☰» в Библиотеке меняет вид между сеткой блоков с обложками и полупрозрачным прогрессом и обычным списком.
+            • Долгое нажатие на книгу задаёт статус (*«Планирую»*, *«Забросил»* и др.), а выбор общей папки Books перенесён в Настройки.
 
             Описание и пересказ сюжета:
             • Нажмите на название книги сверху, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
@@ -1533,6 +1597,37 @@ class MainActivity : Activity(), SensorEventListener {
         return File(dir, "$prefix${bookUriStr.hashCode()}.jpg")
     }
 
+    private fun loadCachedBookCoverBitmap(bookUriStr: String): Bitmap? {
+        if (bookCoverCache.containsKey(bookUriStr)) {
+            return bookCoverCache[bookUriStr]
+        }
+        val customFile = getCoverFile(bookUriStr, custom = true)
+        if (customFile.exists()) {
+            val bmp = BitmapFactory.decodeFile(customFile.absolutePath)
+            if (bmp != null) {
+                bookCoverCache[bookUriStr] = bmp
+                return bmp
+            }
+        }
+        val autoFile = getCoverFile(bookUriStr, custom = false)
+        if (autoFile.exists()) {
+            val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
+            if (bmp != null) {
+                bookCoverCache[bookUriStr] = bmp
+                return bmp
+            }
+        }
+        val folderBmp = findCoverInFolder(Uri.parse(bookUriStr))
+        if (folderBmp != null) {
+            saveBitmapToFile(folderBmp, autoFile, 600)
+            val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: folderBmp
+            bookCoverCache[bookUriStr] = savedBmp
+            return savedBmp
+        }
+        bookCoverCache[bookUriStr] = null
+        return null
+    }
+
     private fun saveBitmapToFile(bmp: Bitmap, target: File, maxSize: Int) {
         val w = bmp.width
         val h = bmp.height
@@ -1589,6 +1684,7 @@ class MainActivity : Activity(), SensorEventListener {
                     2 -> {
                         getCoverFile(bookUri, custom = true).delete()
                         getCoverFile(bookUri, custom = false).delete()
+                        bookCoverCache.remove(bookUri)
                         attemptedCoverSearch.remove(bookUri)
                         lastArtworkSize = -1
                         lastCoverBookUri = null
@@ -1606,6 +1702,7 @@ class MainActivity : Activity(), SensorEventListener {
             if (autoFile.exists()) {
                 val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
                 if (bmp != null) {
+                    bookCoverCache[bookUriStr] = bmp
                     syncWidgetCover(bmp)
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
@@ -1617,9 +1714,11 @@ class MainActivity : Activity(), SensorEventListener {
             val folderBmp = findCoverInFolder(Uri.parse(bookUriStr))
             if (folderBmp != null) {
                 saveBitmapToFile(folderBmp, autoFile, 600)
-                syncWidgetCover(folderBmp)
+                val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: folderBmp
+                bookCoverCache[bookUriStr] = savedBmp
+                syncWidgetCover(savedBmp)
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) coverView.setImageBitmap(folderBmp)
+                    if (!isFinishing && !isDestroyed) coverView.setImageBitmap(savedBmp)
                 }
                 return@Thread
             }
@@ -1647,10 +1746,13 @@ class MainActivity : Activity(), SensorEventListener {
         if (bmp != null) {
             val target = getCoverFile(bookUriStr, custom = asCustom)
             saveBitmapToFile(bmp, target, 600)
-            syncWidgetCover(bmp)
+            val savedBmp = BitmapFactory.decodeFile(target.absolutePath) ?: bmp
+            bookCoverCache[bookUriStr] = savedBmp
+            syncWidgetCover(savedBmp)
             runOnUiThread {
                 if (!isFinishing && !isDestroyed) {
-                    coverView.setImageBitmap(bmp)
+                    coverView.setImageBitmap(savedBmp)
+                    if (isGridViewMode) renderFilteredLibrary()
                     if (notifyIfNotFound) {
                         Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
                     }
@@ -2328,6 +2430,8 @@ class MainActivity : Activity(), SensorEventListener {
         libraryStatusView.setTextColor(t.textSecondary)
 
         settingsTitleView.setTextColor(t.textPrimary)
+        librarySectionLabel.setTextColor(t.textSecondary)
+        libraryFolderPathView.setTextColor(t.textSecondary)
         themeSectionLabel.setTextColor(t.textSecondary)
         badgeSectionLabel.setTextColor(t.textSecondary)
         rewindSectionLabel.setTextColor(t.textSecondary)
@@ -2657,6 +2761,8 @@ class MainActivity : Activity(), SensorEventListener {
             contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
             prefs.edit().putString("library_uri", treeUri.toString()).apply()
+            bookCoverCache.clear()
+            updateLibraryFolderLabel()
             scanLibrary()
         } else if (requestCode == 201 && resultCode == RESULT_OK) {
             val imageUri = data?.data ?: return
@@ -2669,10 +2775,13 @@ class MainActivity : Activity(), SensorEventListener {
                     } ?: return@Thread
                     val customFile = getCoverFile(bookUri, custom = true)
                     saveBitmapToFile(bmp, customFile, 600)
-                    syncWidgetCover(bmp)
+                    val savedBmp = BitmapFactory.decodeFile(customFile.absolutePath) ?: bmp
+                    bookCoverCache[bookUri] = savedBmp
+                    syncWidgetCover(savedBmp)
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed) {
-                            coverView.setImageBitmap(bmp)
+                            coverView.setImageBitmap(savedBmp)
+                            if (isGridViewMode) renderFilteredLibrary()
                             Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -2685,7 +2794,12 @@ class MainActivity : Activity(), SensorEventListener {
     private fun renderFilteredLibrary() {
         if (!::libraryListLayout.isInitialized) return
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-        val libUriStr = prefs.getString("library_uri", null) ?: return
+        val libUriStr = prefs.getString("library_uri", null)
+        if (libUriStr.isNullOrEmpty()) {
+            libraryListLayout.removeAllViews()
+            libraryStatusView.text = "Выберите папку Books в Настройках"
+            return
+        }
         val activeUri = prefs.getString("folder_uri", null)
         val rawQuery = searchInput.text?.toString()?.trim()?.lowercase() ?: ""
         val terms = rawQuery.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -2738,16 +2852,198 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
 
-        for (book in filtered) {
-            libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
+        if (isGridViewMode) {
+            renderBooksGrid(filtered, activeUri)
+        } else {
+            for (book in filtered) {
+                libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
+            }
         }
+    }
+
+    private fun renderBooksGrid(books: List<BookEntry>, activeUri: String?) {
+        val gap = dp(10)
+        var i = 0
+        while (i < books.size) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 2f
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = gap
+                }
+            }
+
+            val leftCard = createBookGridTile(books[i], books[i].uriString == activeUri).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = gap / 2
+                }
+            }
+            row.addView(leftCard)
+
+            if (i + 1 < books.size) {
+                val rightCard = createBookGridTile(books[i + 1], books[i + 1].uriString == activeUri).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginStart = gap / 2
+                    }
+                }
+                row.addView(rightCard)
+            } else {
+                val spacer = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f).apply {
+                        marginStart = gap / 2
+                    }
+                }
+                row.addView(spacer)
+            }
+
+            libraryListLayout.addView(row)
+            i += 2
+        }
+    }
+
+    private fun createBookGridTile(book: BookEntry, isActive: Boolean): View {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
+        val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
+        val assignedLabel = getBookAssignedStatus(book.uriString)?.let { id ->
+            libraryFilters.firstOrNull { it.id == id }?.label
+        }
+        val t = currentTheme
+        val tileHeight = dp(170)
+
+        val frame = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(t.surface)
+                if (isActive) setStroke(dp(2), t.accentBg)
+            }
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
+                }
+            }
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                tileHeight
+            )
+            setOnClickListener { switchToBook(book.uriString) }
+            setOnLongClickListener {
+                showAssignBookStatusDialog(book)
+                true
+            }
+        }
+
+        val coverBmp = loadCachedBookCoverBitmap(book.uriString)
+        val img = ImageView(this).apply {
+            if (coverBmp != null) {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageBitmap(coverBmp)
+            } else {
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setImageResource(android.R.drawable.ic_media_play)
+                setColorFilter(t.textSecondary, PorterDuff.Mode.SRC_IN)
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        frame.addView(img)
+
+        val progressRatio = if (savedIdx >= 0) {
+            ((savedIdx + if (savedPos > 0L) 0.5f else 0.0f) / 20.0f).coerceIn(0.08f, 0.95f)
+        } else {
+            0.0f
+        }
+
+        val overlayBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#B80B0D10"))
+            setPadding(dp(10), dp(7), dp(10), dp(8))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+            )
+        }
+
+        val titleTv = TextView(this).apply {
+            text = if (isActive) "▶ ${book.title}" else book.title
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(Color.parseColor("#FFFFFF"))
+        }
+
+        val statusText = when {
+            assignedLabel != null -> assignedLabel
+            savedIdx >= 0 -> "Гл. ${savedIdx + 1} • ${formatTime(savedPos)}"
+            else -> "Не начата"
+        }
+
+        val metaTv = TextView(this).apply {
+            text = statusText
+            textSize = 10f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(Color.parseColor("#D0D8E0"))
+            setPadding(0, dp(2), 0, dp(4))
+        }
+
+        val barTrack = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(Color.parseColor("#40FFFFFF"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(4)
+            )
+        }
+
+        if (progressRatio > 0f) {
+            val barFill = View(this).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(3).toFloat()
+                    setColor(t.accentBg)
+                }
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                ).apply {
+                    post {
+                        val fullW = barTrack.width
+                        if (fullW > 0) {
+                            layoutParams = FrameLayout.LayoutParams(
+                                (fullW * progressRatio).toInt().coerceAtLeast(dp(6)),
+                                FrameLayout.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    }
+                }
+            }
+            barTrack.addView(barFill)
+        }
+
+        overlayBox.addView(titleTv)
+        overlayBox.addView(metaTv)
+        overlayBox.addView(barTrack)
+        frame.addView(overlayBox)
+
+        return frame
     }
 
     private fun scanLibrary() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val libUriStr = prefs.getString("library_uri", null)
         if (libUriStr == null) {
-            libraryStatusView.text = "Нажмите кнопку выше и выберите папку Books"
+            libraryStatusView.text = "Выберите папку Books в Настройках"
+            libraryListLayout.removeAllViews()
             return
         }
 
@@ -3004,6 +3300,7 @@ class MainActivity : Activity(), SensorEventListener {
                 Thread {
                     val bmp = BitmapFactory.decodeFile(customFile.absolutePath)
                     if (bmp != null) {
+                        if (bookUri != null) bookCoverCache[bookUri] = bmp
                         syncWidgetCover(bmp)
                         runOnUiThread {
                             if (!isFinishing && !isDestroyed) coverView.setImageBitmap(bmp)
