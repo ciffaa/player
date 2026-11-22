@@ -182,12 +182,12 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var authorSubView: TextView
     private lateinit var bookTitleView: TextView
     private lateinit var speedBtn: TextView
-    private lateinit var back15Btn: TextView
+    private lateinit var back15Btn: ImageView
     private lateinit var playPauseBtn: ImageView
-    private lateinit var fwd30Btn: TextView
+    private lateinit var fwd30Btn: ImageView
     private lateinit var timerBtn: TextView
     private lateinit var chapterBtn: TextView
-    private lateinit var bookmarkBtn: TextView
+    private lateinit var bookmarkBtn: ImageView
     private lateinit var seekBar: SeekBar
     private lateinit var elapsedTimeView: TextView
     private lateinit var remainingTimeView: TextView
@@ -244,6 +244,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastArtworkSize = -1
     private var lastCoverBookUri: String? = null
     private val attemptedCoverSearch = mutableSetOf<String>()
+    private var detectedAuthorForCurrentBook: String = ""
 
     private var sleepTimerEndMs = 0L
     private val sleepFadeDurationMs = 30_000L
@@ -293,35 +294,65 @@ class MainActivity : Activity(), SensorEventListener {
         updateLibraryFolderLabel()
 
         val savedBookTitle = prefs.getString("last_book_title", null)
+        val savedAuthor = prefs.getString("last_book_author", "") ?: ""
         val savedPos = prefs.getLong("last_pos", 0L)
         if (!savedBookTitle.isNullOrEmpty()) {
-            applyBookHeaderText(savedBookTitle)
+            detectedAuthorForCurrentBook = savedAuthor
+            applyBookHeaderText(savedBookTitle, savedAuthor)
             elapsedTimeView.text = formatTime(savedPos)
         }
 
         showTab(0)
     }
 
-    private fun applyBookHeaderText(rawTitle: String) {
+    private fun extractAuthorFromBookUri(bookUriStr: String?): String {
+        if (bookUriStr.isNullOrEmpty()) return ""
+        val decoded = Uri.decode(bookUriStr)
+        val pathPart = decoded.substringAfterLast(':')
+        val segments = pathPart.split('/').map { it.trim() }.filter { it.isNotEmpty() }
+        if (segments.size >= 3) {
+            val candidate = segments[segments.size - 2]
+            if (!candidate.equals("Books", ignoreCase = true) &&
+                !candidate.equals("Audiobooks", ignoreCase = true)
+            ) {
+                return candidate
+            }
+        }
+        return ""
+    }
+
+    private fun applyBookHeaderText(rawTitle: String, explicitAuthor: String = "") {
         val clean = rawTitle.trim()
         if (clean.isEmpty() || clean == "Книга не выбрана") {
             topHeaderView.text = ""
             authorSubView.text = ""
+            authorSubView.visibility = View.GONE
             bookTitleView.text = "Книга не выбрана"
             return
         }
 
         val parts = clean.split(Regex("\\s*[—–-]\\s*|\\s*/\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+        val resolvedAuthor: String
+        val resolvedTitle: String
+
         if (parts.size >= 2) {
-            topHeaderView.text = parts.first()
-            authorSubView.text = parts.first()
-            bookTitleView.text = parts.drop(1).joinToString(" — ")
+            resolvedAuthor = parts.first()
+            resolvedTitle = parts.drop(1).joinToString(" — ")
         } else {
-            topHeaderView.text = clean
-            authorSubView.text = ""
-            bookTitleView.text = clean
+            resolvedAuthor = explicitAuthor.trim()
+            resolvedTitle = clean
         }
-        authorSubView.visibility = if (authorSubView.text.isNullOrEmpty()) View.GONE else View.VISIBLE
+
+        topHeaderView.text = resolvedTitle
+        if (resolvedAuthor.isNotEmpty() && !resolvedAuthor.equals(resolvedTitle, ignoreCase = true)) {
+            authorSubView.text = resolvedAuthor
+            authorSubView.visibility = View.VISIBLE
+            bookTitleView.text = resolvedTitle
+        } else {
+            authorSubView.text = ""
+            authorSubView.visibility = View.GONE
+            bookTitleView.text = resolvedTitle
+        }
     }
 
     private fun getActiveBookLookupTitle(): String {
@@ -717,12 +748,12 @@ class MainActivity : Activity(), SensorEventListener {
 
         topHeaderView = TextView(this).apply {
             text = ""
-            textSize = 15f
+            textSize = 15.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(4), dp(12), dp(6))
+            setPadding(dp(12), dp(2), dp(12), dp(6))
             setOnClickListener {
                 val query = getActiveBookLookupTitle()
                 if (query.isNotEmpty()) {
@@ -764,7 +795,7 @@ class MainActivity : Activity(), SensorEventListener {
         val metaBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(16), dp(8), dp(16), dp(6))
+            setPadding(dp(16), dp(6), dp(16), dp(4))
             setOnClickListener {
                 val query = getActiveBookLookupTitle()
                 if (query.isNotEmpty()) {
@@ -775,7 +806,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         authorSubView = TextView(this).apply {
             text = ""
-            textSize = 13f
+            textSize = 13.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             letterSpacing = 0.02f
             maxLines = 1
@@ -797,6 +828,49 @@ class MainActivity : Activity(), SensorEventListener {
         metaBlock.addView(authorSubView)
         metaBlock.addView(bookTitleView)
 
+        val chapterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(6)
+            }
+        }
+
+        val leftBalanceSpacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(1))
+        }
+
+        chapterBtn = TextView(this).apply {
+            text = "☰  Выберите книгу в Библиотеке"
+            textSize = 13.5f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { showChaptersDialog() }
+        }
+
+        bookmarkBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_bookmark_minimal)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { openBookmarksList() }
+            setOnLongClickListener {
+                openAddBookmarkNow()
+                true
+            }
+        }
+
+        chapterRow.addView(leftBalanceSpacer)
+        chapterRow.addView(chapterBtn)
+        chapterRow.addView(bookmarkBtn)
+
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -805,7 +879,7 @@ class MainActivity : Activity(), SensorEventListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(14)
+                bottomMargin = dp(12)
             }
         }
 
@@ -820,14 +894,26 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
 
-        speedBtn = makeTextAction("1x", 16f) { cycleSpeed() }
-        back15Btn = makeTextAction("↺ 15", 17f) {
-            controller?.let {
-                suppressNextRewindOnce = true
-                it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
-                saveCurrentProgress()
+        speedBtn = makeTextAction("1x", 15.5f) { cycleSpeed() }
+
+        val backWrap = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                controller?.let {
+                    suppressNextRewindOnce = true
+                    it.seekTo((it.currentPosition - 15_000).coerceAtLeast(0))
+                    saveCurrentProgress()
+                }
             }
         }
+        back15Btn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_rewind_15)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        }
+        backWrap.addView(back15Btn)
 
         val playContainer = LinearLayout(this).apply {
             gravity = Gravity.CENTER
@@ -850,58 +936,33 @@ class MainActivity : Activity(), SensorEventListener {
         }
         playContainer.addView(playPauseBtn)
 
-        fwd30Btn = makeTextAction("30 ↻", 17f) {
-            controller?.let {
-                suppressNextRewindOnce = true
-                val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
-                it.seekTo(target)
-                saveCurrentProgress()
+        val fwdWrap = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                controller?.let {
+                    suppressNextRewindOnce = true
+                    val target = (it.currentPosition + 30_000).coerceAtMost(it.duration.coerceAtLeast(0))
+                    it.seekTo(target)
+                    saveCurrentProgress()
+                }
             }
         }
-        timerBtn = makeTextAction("⏱", 20f) { showSleepTimerDialog() }
+        fwd30Btn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_forward_30)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        }
+        fwdWrap.addView(fwd30Btn)
+
+        timerBtn = makeTextAction("⏱", 19f) { showSleepTimerDialog() }
 
         controlsRow.addView(speedBtn)
-        controlsRow.addView(back15Btn)
+        controlsRow.addView(backWrap)
         controlsRow.addView(playContainer)
-        controlsRow.addView(fwd30Btn)
+        controlsRow.addView(fwdWrap)
         controlsRow.addView(timerBtn)
-
-        val chapterRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(4)
-            }
-        }
-
-        chapterBtn = TextView(this).apply {
-            text = "☰  Выберите книгу в Библиотеке"
-            textSize = 14.5f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(6), dp(8), dp(10))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showChaptersDialog() }
-        }
-
-        bookmarkBtn = TextView(this).apply {
-            text = "🔖"
-            textSize = 18f
-            gravity = Gravity.CENTER
-            setPadding(dp(10), dp(6), dp(12), dp(10))
-            setOnClickListener { openBookmarksList() }
-            setOnLongClickListener {
-                openAddBookmarkNow()
-                true
-            }
-        }
-
-        chapterRow.addView(chapterBtn)
-        chapterRow.addView(bookmarkBtn)
 
         seekBar = SeekBar(this).apply {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -953,8 +1014,8 @@ class MainActivity : Activity(), SensorEventListener {
         playerContainer.addView(topHeaderView)
         playerContainer.addView(coverWrapper)
         playerContainer.addView(metaBlock)
-        playerContainer.addView(controlsRow)
         playerContainer.addView(chapterRow)
+        playerContainer.addView(controlsRow)
         playerContainer.addView(seekBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1617,9 +1678,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showHelpDialog() {
         val guideText = """
-            Закладки (🔖):
-            • Обычное нажатие на 🔖 — открывает список закладок текущей книги. Внутри есть кнопка «+ Добавить закладку». Нажатие по закладке перематывает на нужный момент, долгое нажатие — удаляет её.
-            • Долгое нажатие на 🔖 — сразу открывает окно создания закладки на текущем таймкоде с полем для заметки.
+            Закладки:
+            • Обычное нажатие на иконку закладки справа от главы — открывает список закладок текущей книги. Внутри есть кнопка «+ Добавить закладку». Нажатие по закладке перематывает на нужный момент, долгое нажатие — удаляет её.
+            • Долгое нажатие на закладку — сразу открывает окно создания закладки на текущем таймкоде с полем для заметки.
 
             Главы и M4B:
             • Нажатие на название главы открывает список глав. Для книг одним файлом .m4b автоматически считываются встроенные главы по таймкодам.
@@ -1633,7 +1694,7 @@ class MainActivity : Activity(), SensorEventListener {
 
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
-            • ↺ 15 и 30 ↻ — перемотка назад на 15 сек и вперёд на 30 сек.
+            • 15 и 30 — перемотка назад на 15 сек и вперёд на 30 сек.
             • ⏱ — таймер сна с плавным затуханием звука за 30 сек до конца и продлением встряхиванием (+10 мин).
             • Умный автооткат после паузы — мягко сдвигает позицию назад при возвращении после паузы от 1 минуты.
         """.trimIndent()
@@ -2520,15 +2581,15 @@ class MainActivity : Activity(), SensorEventListener {
         updateCoverGlowColor(null)
         coverView.setBackgroundColor(t.surface)
         speedBtn.setTextColor(t.textPrimary)
-        back15Btn.setTextColor(t.textPrimary)
-        fwd30Btn.setTextColor(t.textPrimary)
+        back15Btn.setColorFilter(t.textPrimary, PorterDuff.Mode.SRC_IN)
+        fwd30Btn.setColorFilter(t.textPrimary, PorterDuff.Mode.SRC_IN)
         playPauseBtn.setColorFilter(t.accentText, PorterDuff.Mode.SRC_IN)
         playPauseBtn.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(t.accentBg)
         }
         chapterBtn.setTextColor(t.textPrimary)
-        bookmarkBtn.setTextColor(t.textSecondary)
+        bookmarkBtn.setColorFilter(t.textSecondary, PorterDuff.Mode.SRC_IN)
         elapsedTimeView.setTextColor(t.textSecondary)
         remainingTimeView.setTextColor(t.textSecondary)
         seekBar.progressTintList = ColorStateList.valueOf(t.accentBg)
@@ -3276,6 +3337,7 @@ class MainActivity : Activity(), SensorEventListener {
         lastLoadedChapterUri = null
         lastArtworkSize = -1
         lastCoverBookUri = null
+        detectedAuthorForCurrentBook = extractAuthorFromBookUri(bookUriStr)
         showTab(0)
         loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true, showLoadingHint = true)
     }
@@ -3294,6 +3356,9 @@ class MainActivity : Activity(), SensorEventListener {
         if (!bookTitle.isNullOrEmpty()) {
             editor.putString("last_book_title", bookTitle)
         }
+        if (detectedAuthorForCurrentBook.isNotEmpty()) {
+            editor.putString("last_book_author", detectedAuthorForCurrentBook)
+        }
         editor.apply()
     }
 
@@ -3304,6 +3369,7 @@ class MainActivity : Activity(), SensorEventListener {
         val uriStr = prefs.getString("folder_uri", null) ?: return
         val index = prefs.getInt("idx_$uriStr", prefs.getInt("last_index", 0))
         val pos = prefs.getLong("pos_$uriStr", prefs.getLong("last_pos", 0L))
+        detectedAuthorForCurrentBook = extractAuthorFromBookUri(uriStr)
         loadFolder(Uri.parse(uriStr), index, pos, autoPlay = false, showLoadingHint = false)
     }
 
@@ -3317,6 +3383,25 @@ class MainActivity : Activity(), SensorEventListener {
                 if (audioExt.any { name.endsWith(it) }) {
                     out.add(entry)
                 }
+            }
+        }
+    }
+
+    private fun extractAuthorFromFirstAudio(fileUri: Uri): String {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(this, fileUri)
+            val author = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR)?.trim()
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.trim()
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.trim()
+                ?: ""
+            author
+        } catch (_: Exception) {
+            ""
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
             }
         }
     }
@@ -3341,11 +3426,18 @@ class MainActivity : Activity(), SensorEventListener {
                 val files = mutableListOf<DocumentFile>()
                 collectAudioFiles(dir, files)
 
+                var authorName = extractAuthorFromBookUri(treeUri.toString())
+                if (authorName.isEmpty() && files.isNotEmpty()) {
+                    authorName = extractAuthorFromFirstAudio(files.first().uri)
+                }
+                detectedAuthorForCurrentBook = authorName
+
                 runOnUiThread {
-                    applyBookHeaderText(bookName)
+                    applyBookHeaderText(bookName, authorName)
                     getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
                         .edit()
                         .putString("last_book_title", bookName)
+                        .putString("last_book_author", authorName)
                         .apply()
 
                     if (files.isEmpty()) {
@@ -3391,10 +3483,16 @@ class MainActivity : Activity(), SensorEventListener {
         val player = controller ?: return
         refreshM4bChaptersIfNeeded(player)
 
+        val bookUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .getString("folder_uri", null)
+        if (detectedAuthorForCurrentBook.isEmpty() && !bookUri.isNullOrEmpty()) {
+            detectedAuthorForCurrentBook = extractAuthorFromBookUri(bookUri)
+        }
+
         val itemMeta = player.currentMediaItem?.mediaMetadata
         val bookTitle = itemMeta?.artist?.toString() ?: "Аудиокнига"
         if (itemMeta != null) {
-            applyBookHeaderText(bookTitle)
+            applyBookHeaderText(bookTitle, detectedAuthorForCurrentBook)
             val m4bCh = currentM4bChapter(player.currentPosition.coerceAtLeast(0L))
             val chapterName = m4bCh?.title
                 ?: itemMeta.title?.toString()
@@ -3402,8 +3500,6 @@ class MainActivity : Activity(), SensorEventListener {
             chapterBtn.text = "☰  $chapterName"
         }
 
-        val bookUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
-            .getString("folder_uri", null)
         val artBytes = player.mediaMetadata.artworkData
         val artSize = artBytes?.size ?: 0
         val bookChanged = bookUri != lastCoverBookUri
