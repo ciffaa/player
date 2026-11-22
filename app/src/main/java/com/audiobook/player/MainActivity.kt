@@ -316,17 +316,17 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun setupGlowAnimator() {
         glowAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 3600L
+            duration = 3400L
             repeatCount = ValueAnimator.INFINITE
             repeatMode = ValueAnimator.REVERSE
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { anim ->
                 val t = anim.animatedValue as Float
                 if (!::coverGlowView.isInitialized) return@addUpdateListener
-                val scale = 0.96f + 0.08f * t
+                val scale = 0.94f + 0.06f * t
                 coverGlowView.scaleX = scale
                 coverGlowView.scaleY = scale
-                coverGlowView.alpha = 0.72f + 0.28f * t
+                coverGlowView.alpha = 0.80f + 0.20f * t
             }
         }
     }
@@ -805,6 +805,8 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         val coverWrapper = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -812,7 +814,7 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        val glowSize = dp(390)
+        val glowSize = dp(440)
         coverGlowView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = FrameLayout.LayoutParams(glowSize, glowSize, Gravity.CENTER)
@@ -1468,7 +1470,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildSoftGlowBitmap(baseColor: Int): Bitmap {
-        val size = 360
+        val size = 400
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val cx = size * 0.5f
@@ -1479,9 +1481,9 @@ class MainActivity : Activity(), SensorEventListener {
         val g = Color.green(baseColor)
         val b = Color.blue(baseColor)
 
-        val inner = Color.argb(215, r, g, b)
-        val mid = Color.argb(120, r, g, b)
-        val outer = Color.argb(42, r, g, b)
+        val inner = Color.argb(238, r, g, b)
+        val mid = Color.argb(155, r, g, b)
+        val outer = Color.argb(62, r, g, b)
         val edge = Color.argb(0, r, g, b)
 
         val shader = RadialGradient(
@@ -1489,7 +1491,7 @@ class MainActivity : Activity(), SensorEventListener {
             cy,
             radius,
             intArrayOf(inner, mid, outer, edge),
-            floatArrayOf(0.0f, 0.54f, 0.79f, 1.0f),
+            floatArrayOf(0.0f, 0.46f, 0.70f, 0.86f),
             Shader.TileMode.CLAMP
         )
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1523,20 +1525,26 @@ class MainActivity : Activity(), SensorEventListener {
                 val avgB = (sumB / count.coerceAtLeast(1))
                 when (t.id) {
                     "dark_green" -> Color.rgb(
-                        (avgR + 102) / 2,
-                        (avgG + 187) / 2,
-                        (avgB + 106) / 2
+                        minOf(255, (avgR + 120) / 2 + 12),
+                        minOf(255, (avgG + 210) / 2 + 16),
+                        minOf(255, (avgB + 125) / 2 + 12)
                     )
                     "dark" -> Color.rgb(
-                        minOf(255, (avgR * 1.15f).toInt() + 18),
-                        minOf(255, (avgG * 1.15f).toInt() + 18),
-                        minOf(255, (avgB * 1.15f).toInt() + 18)
+                        minOf(255, (avgR * 1.25f).toInt() + 28),
+                        minOf(255, (avgG * 1.25f).toInt() + 28),
+                        minOf(255, (avgB * 1.25f).toInt() + 28)
+                    )
+                    "light" -> Color.rgb(
+                        maxOf(0, (avgR * 0.72f).toInt()),
+                        maxOf(0, (avgG * 0.72f).toInt()),
+                        maxOf(0, (avgB * 0.85f).toInt())
                     )
                     else -> Color.rgb(avgR, avgG, avgB)
                 }
             }
-            t.id == "dark_green" -> Color.parseColor("#66BB6A")
-            t.id == "dark" -> Color.parseColor("#64B5F6")
+            t.id == "dark_green" -> Color.parseColor("#76D275")
+            t.id == "dark" -> Color.parseColor("#82B1FF")
+            t.id == "light" -> Color.parseColor("#1976D2")
             else -> t.accentBg
         }
 
