@@ -1887,7 +1887,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun getCoverFile(bookUriStr: String, custom: Boolean): File {
         val dir = File(filesDir, "covers").apply { if (!exists()) mkdirs() }
-        val prefix = if (custom) "custom_v4_" else "auto_v4_"
+        val prefix = if (custom) "custom_v5_" else "auto_v5_"
         return File(dir, "$prefix${bookUriStr.hashCode()}.jpg")
     }
 
@@ -2018,13 +2018,14 @@ class MainActivity : Activity(), SensorEventListener {
         Thread {
             for (book in missing) {
                 if (isFinishing || isDestroyed || gen != libraryCoverFetchGeneration) return@Thread
-                val autoFile = getCoverFile(book.uriString, custom = false)
+                val targetUri = book.uriString
+                val autoFile = getCoverFile(targetUri, custom = false)
 
-                val nativeBmp = findNativeBookCover(book.uriString)
+                val nativeBmp = findNativeBookCover(targetUri)
                 if (nativeBmp != null) {
                     saveBitmapToFile(nativeBmp, autoFile, 600)
                     val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: nativeBmp
-                    bookCoverCache[book.uriString] = savedBmp
+                    bookCoverCache[targetUri] = savedBmp
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
                             renderFilteredLibrary()
@@ -2036,7 +2037,7 @@ class MainActivity : Activity(), SensorEventListener {
                 if (autoFile.exists()) {
                     val existingBmp = BitmapFactory.decodeFile(autoFile.absolutePath)
                     if (existingBmp != null) {
-                        bookCoverCache[book.uriString] = existingBmp
+                        bookCoverCache[targetUri] = existingBmp
                         runOnUiThread {
                             if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
                                 renderFilteredLibrary()
@@ -2046,11 +2047,11 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                 }
 
-                val fetched = fetchCoverBitmapForBook(book.title, book.uriString)
+                val fetched = fetchCoverBitmapForBook(book.title, targetUri)
                 if (fetched != null) {
                     saveBitmapToFile(fetched, autoFile, 600)
                     val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: fetched
-                    bookCoverCache[book.uriString] = savedBmp
+                    bookCoverCache[targetUri] = savedBmp
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1 && gen == libraryCoverFetchGeneration) {
                             renderFilteredLibrary()
@@ -2126,7 +2127,8 @@ class MainActivity : Activity(), SensorEventListener {
                         attemptedCoverSearch.remove(bookUri)
                         lastArtworkSize = -1
                         lastCoverBookUri = null
-                        updateUI()
+                        setCoverBitmap(null)
+                        loadFallbackCoverAsync(bookUri, bookTitle)
                         if (isGridViewMode) renderFilteredLibrary()
                         Toast.makeText(this, "Обложка сброшена к родной", Toast.LENGTH_SHORT).show()
                     }
@@ -2143,12 +2145,15 @@ class MainActivity : Activity(), SensorEventListener {
                 saveBitmapToFile(nativeBmp, nativeFile, 600)
                 val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
                 bookCoverCache[bookUriStr] = savedBmp
-                syncWidgetCover(savedBmp)
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val currentActiveUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                        .getString("folder_uri", null)
+                    if (currentActiveUri == bookUriStr) {
+                        syncWidgetCover(savedBmp)
                         setCoverBitmap(savedBmp)
-                        if (isGridViewMode) renderFilteredLibrary()
                     }
+                    if (isGridViewMode) renderFilteredLibrary()
                 }
                 return@Thread
             }
@@ -2158,12 +2163,15 @@ class MainActivity : Activity(), SensorEventListener {
                 val bmp = BitmapFactory.decodeFile(autoFile.absolutePath)
                 if (bmp != null) {
                     bookCoverCache[bookUriStr] = bmp
-                    syncWidgetCover(bmp)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        val currentActiveUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                            .getString("folder_uri", null)
+                        if (currentActiveUri == bookUriStr) {
+                            syncWidgetCover(bmp)
                             setCoverBitmap(bmp)
-                            if (isGridViewMode) renderFilteredLibrary()
                         }
+                        if (isGridViewMode) renderFilteredLibrary()
                     }
                     return@Thread
                 }
@@ -2193,14 +2201,17 @@ class MainActivity : Activity(), SensorEventListener {
             saveBitmapToFile(bmp, target, 600)
             val savedBmp = BitmapFactory.decodeFile(target.absolutePath) ?: bmp
             bookCoverCache[bookUriStr] = savedBmp
-            syncWidgetCover(savedBmp)
             runOnUiThread {
-                if (!isFinishing && !isDestroyed) {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val currentActiveUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                    .getString("folder_uri", null)
+                if (currentActiveUri == bookUriStr) {
+                    syncWidgetCover(savedBmp)
                     setCoverBitmap(savedBmp)
-                    if (isGridViewMode) renderFilteredLibrary()
-                    if (notifyIfNotFound) {
-                        Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
-                    }
+                }
+                if (isGridViewMode) renderFilteredLibrary()
+                if (notifyIfNotFound && currentActiveUri == bookUriStr) {
+                    Toast.makeText(this, "Обложка обновлена", Toast.LENGTH_SHORT).show()
                 }
             }
         } else if (notifyIfNotFound) {
@@ -3247,13 +3258,16 @@ class MainActivity : Activity(), SensorEventListener {
                     saveBitmapToFile(bmp, customFile, 600)
                     val savedBmp = BitmapFactory.decodeFile(customFile.absolutePath) ?: bmp
                     bookCoverCache[bookUri] = savedBmp
-                    syncWidgetCover(savedBmp)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        val currentActiveUri = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                            .getString("folder_uri", null)
+                        if (currentActiveUri == bookUri) {
+                            syncWidgetCover(savedBmp)
                             setCoverBitmap(savedBmp)
-                            if (isGridViewMode) renderFilteredLibrary()
-                            Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                         }
+                        if (isGridViewMode) renderFilteredLibrary()
+                        Toast.makeText(this, "Обложка сохранена", Toast.LENGTH_SHORT).show()
                     }
                 } catch (_: Exception) {
                 }
@@ -3631,6 +3645,7 @@ class MainActivity : Activity(), SensorEventListener {
         lastArtworkSize = -1
         lastCoverBookUri = null
         detectedAuthorForCurrentBook = extractAuthorFromBookUri(bookUriStr)
+        setCoverBitmap(null)
         showTab(0)
         loadFolder(Uri.parse(bookUriStr), savedIndex, savedPos, autoPlay = true, showLoadingHint = true)
     }
@@ -3807,35 +3822,34 @@ class MainActivity : Activity(), SensorEventListener {
                     val bmp = BitmapFactory.decodeFile(customFile.absolutePath)
                     if (bmp != null) {
                         if (bookUri != null) bookCoverCache[bookUri] = bmp
-                        syncWidgetCover(bmp)
                         runOnUiThread {
-                            if (!isFinishing && !isDestroyed) setCoverBitmap(bmp)
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            val activeUriNow = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                                .getString("folder_uri", null)
+                            if (activeUriNow == bookUri) {
+                                syncWidgetCover(bmp)
+                                setCoverBitmap(bmp)
+                            }
                         }
                     }
                 }.start()
             } else {
                 val nativeBmp = bookUri?.let { findNativeBookCover(it) }
-                if (nativeBmp != null) {
-                    if (bookUri != null) {
-                        val nativeFile = getCoverFile(bookUri, custom = false)
-                        saveBitmapToFile(nativeBmp, nativeFile, 600)
-                        val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
-                        bookCoverCache[bookUri] = savedBmp
-                        syncWidgetCover(savedBmp)
-                        runOnUiThread {
-                            if (!isFinishing && !isDestroyed) {
-                                setCoverBitmap(savedBmp)
-                                if (isGridViewMode) renderFilteredLibrary()
-                            }
-                        }
-                    } else {
-                        setCoverBitmap(nativeBmp)
-                    }
+                if (nativeBmp != null && bookUri != null) {
+                    val nativeFile = getCoverFile(bookUri, custom = false)
+                    saveBitmapToFile(nativeBmp, nativeFile, 600)
+                    val savedBmp = BitmapFactory.decodeFile(nativeFile.absolutePath) ?: nativeBmp
+                    bookCoverCache[bookUri] = savedBmp
+                    syncWidgetCover(savedBmp)
+                    setCoverBitmap(savedBmp)
                 } else if (artBytes != null) {
                     Thread {
                         val bmp = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
                         runOnUiThread {
-                            if (!isFinishing && !isDestroyed && bmp != null) {
+                            if (isFinishing || isDestroyed || bmp == null) return@runOnUiThread
+                            val activeUriNow = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                                .getString("folder_uri", null)
+                            if (activeUriNow == bookUri) {
                                 setCoverBitmap(bmp)
                                 if (bookUri != null) {
                                     val nativeFile = getCoverFile(bookUri, custom = false)
