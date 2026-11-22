@@ -10,10 +10,15 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Paint
 import android.graphics.PorterDuff
+import android.graphics.RadialGradient
+import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -177,7 +182,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsContainer: LinearLayout
 
     private lateinit var topHeaderView: TextView
-    private lateinit var coverGlowView: View
+    private lateinit var coverGlowView: ImageView
     private lateinit var coverView: ImageView
     private lateinit var authorSubView: TextView
     private lateinit var bookTitleView: TextView
@@ -770,8 +775,9 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        val glowSize = dp(336)
-        coverGlowView = View(this).apply {
+        val glowSize = dp(356)
+        coverGlowView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = FrameLayout.LayoutParams(glowSize, glowSize, Gravity.CENTER)
         }
 
@@ -796,12 +802,6 @@ class MainActivity : Activity(), SensorEventListener {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(16), dp(6), dp(16), dp(4))
-            setOnClickListener {
-                val query = getActiveBookLookupTitle()
-                if (query.isNotEmpty()) {
-                    showBookInfoDialog(query, forceRefresh = false)
-                }
-            }
         }
 
         authorSubView = TextView(this).apply {
@@ -1430,24 +1430,57 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(rootLayout)
     }
 
+    private fun buildSoftGlowBitmap(baseColor: Int): Bitmap {
+        val size = 240
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val cx = size * 0.5f
+        val cy = size * 0.5f
+        val radius = size * 0.5f
+
+        val inner = Color.argb(115, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+        val mid = Color.argb(46, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+        val edge = Color.argb(0, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+
+        val shader = RadialGradient(
+            cx,
+            cy,
+            radius,
+            intArrayOf(inner, mid, edge),
+            floatArrayOf(0.0f, 0.58f, 1.0f),
+            Shader.TileMode.CLAMP
+        )
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.shader = shader
+        }
+        canvas.drawCircle(cx, cy, radius, paint)
+        return bmp
+    }
+
     private fun updateCoverGlowColor(bmp: Bitmap?) {
         val t = currentTheme
-        val glowColor = if (bmp != null) {
-            val scaled = Bitmap.createScaledBitmap(bmp, 16, 16, true)
-            val px = scaled.getPixel(8, 8)
-            if (scaled != bmp) scaled.recycle()
-            val r = (Color.red(px) + Color.red(t.activeCard)) / 2
-            val g = (Color.green(px) + Color.green(t.activeCard)) / 2
-            val b = (Color.blue(px) + Color.blue(t.activeCard)) / 2
-            Color.argb(66, r, g, b)
-        } else {
-            Color.argb(56, Color.red(t.activeCard), Color.green(t.activeCard), Color.blue(t.activeCard))
+        val glowSourceColor = when {
+            bmp != null -> {
+                val scaled = Bitmap.createScaledBitmap(bmp, 16, 16, true)
+                val px = scaled.getPixel(8, 8)
+                if (scaled != bmp) scaled.recycle()
+                if (t.id == "dark_green") {
+                    Color.rgb(
+                        (Color.red(px) + 75) / 2,
+                        (Color.green(px) + 185) / 2,
+                        (Color.blue(px) + 105) / 2
+                    )
+                } else {
+                    px
+                }
+            }
+            t.id == "dark_green" -> Color.parseColor("#4CAF50")
+            else -> t.accentBg
         }
 
-        coverGlowView.background = GradientDrawable().apply {
-            cornerRadius = dp(34).toFloat()
-            setColor(glowColor)
-        }
+        val prevDrawable = coverGlowView.drawable as? BitmapDrawable
+        coverGlowView.setImageBitmap(buildSoftGlowBitmap(glowSourceColor))
+        prevDrawable?.bitmap?.recycle()
     }
 
     private fun setCoverBitmap(bmp: Bitmap?) {
@@ -1690,7 +1723,7 @@ class MainActivity : Activity(), SensorEventListener {
             • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
 
             Описание и пересказ сюжета:
-            • Нажмите на название книги или строку автора, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
+            • Нажмите на верхнюю строку названия книги, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей главы без спойлеров.
 
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
@@ -2631,6 +2664,15 @@ class MainActivity : Activity(), SensorEventListener {
         updateNavColors()
     }
 
+    private fun themeSwatchColor(themeOption: AppTheme): Int {
+        return when (themeOption.id) {
+            "dark" -> Color.parseColor("#2A2A32")
+            "light" -> Color.parseColor("#F5F6F8")
+            "dark_green" -> Color.parseColor("#66BB6A")
+            else -> themeOption.accentBg
+        }
+    }
+
     private fun rebuildThemeButtons() {
         themeButtonsContainer.removeAllViews()
         val t = currentTheme
@@ -2663,8 +2705,8 @@ class MainActivity : Activity(), SensorEventListener {
             val previewDot = View(this).apply {
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
-                    setColor(themeOption.accentBg)
-                    setStroke(dp(2), themeOption.bg)
+                    setColor(themeSwatchColor(themeOption))
+                    setStroke(dp(2), t.textSecondary)
                 }
                 layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
                     marginEnd = dp(14)
