@@ -30,6 +30,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.Button
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -57,6 +58,13 @@ data class BookEntry(
     val title: String,
     val subtitle: String,
     val uriString: String
+)
+
+data class LibraryFilterItem(
+    val id: String,
+    val label: String,
+    val isSmartInProgress: Boolean = false,
+    val isSmartNotStarted: Boolean = false
 )
 
 data class AppTheme(
@@ -180,6 +188,12 @@ class MainActivity : Activity() {
     private lateinit var searchBarContainer: LinearLayout
     private lateinit var searchInput: EditText
     private lateinit var clearSearchBtn: TextView
+    private lateinit var filterRowLayout: LinearLayout
+    private lateinit var filterChipsScroll: HorizontalScrollView
+    private lateinit var filterChipsRow: LinearLayout
+    private lateinit var editFiltersBtn: TextView
+    private var libraryFilters: MutableList<LibraryFilterItem> = mutableListOf()
+    private var selectedFilterId: String = "all"
     private lateinit var libraryStatusView: TextView
     private lateinit var libraryListLayout: LinearLayout
     private var cachedBooks: List<BookEntry> = emptyList()
@@ -245,6 +259,7 @@ class MainActivity : Activity() {
         val savedBadgeId = prefs.getString("app_badge", "v1")
         currentBadge = badges.find { it.id == savedBadgeId } ?: badges[0]
 
+        loadLibraryFilters()
         buildUI()
         applyTheme()
 
@@ -256,6 +271,214 @@ class MainActivity : Activity() {
         }
 
         showTab(0)
+    }
+
+    private fun defaultLibraryFilters(): MutableList<LibraryFilterItem> {
+        return mutableListOf(
+            LibraryFilterItem(id = "in_progress", label = "В процессе", isSmartInProgress = true),
+            LibraryFilterItem(id = "not_started", label = "Не начаты", isSmartNotStarted = true),
+            LibraryFilterItem(id = "planned", label = "Планирую"),
+            LibraryFilterItem(id = "dropped", label = "Забросил")
+        )
+    }
+
+    private fun loadLibraryFilters() {
+        val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+        val raw = prefs.getString("custom_library_filters_json", null)
+        if (raw.isNullOrEmpty()) {
+            libraryFilters = defaultLibraryFilters()
+            return
+        }
+        try {
+            val arr = JSONArray(raw)
+            val parsed = mutableListOf<LibraryFilterItem>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id", "").trim()
+                val label = obj.optString("label", "").trim()
+                if (id.isNotEmpty() && label.isNotEmpty()) {
+                    parsed.add(
+                        LibraryFilterItem(
+                            id = id,
+                            label = label,
+                            isSmartInProgress = obj.optBoolean("smartInProgress", false),
+                            isSmartNotStarted = obj.optBoolean("smartNotStarted", false)
+                        )
+                    )
+                }
+            }
+            libraryFilters = if (parsed.isNotEmpty()) parsed else defaultLibraryFilters()
+        } catch (_: Exception) {
+            libraryFilters = defaultLibraryFilters()
+        }
+        if (selectedFilterId != "all" && libraryFilters.none { it.id == selectedFilterId }) {
+            selectedFilterId = "all"
+        }
+    }
+
+    private fun saveLibraryFilters() {
+        val arr = JSONArray()
+        for (item in libraryFilters) {
+            arr.put(
+                JSONObject()
+                    .put("id", item.id)
+                    .put("label", item.label)
+                    .put("smartInProgress", item.isSmartInProgress)
+                    .put("smartNotStarted", item.isSmartNotStarted)
+            )
+        }
+        getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("custom_library_filters_json", arr.toString())
+            .apply()
+    }
+
+    private fun getBookAssignedStatus(bookUri: String): String? {
+        val raw = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .getString("book_status_$bookUri", null)
+            ?.trim()
+        return if (raw.isNullOrEmpty()) null else raw
+    }
+
+    private fun setBookAssignedStatus(bookUri: String, filterId: String?) {
+        val editor = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE).edit()
+        if (filterId.isNullOrEmpty()) {
+            editor.remove("book_status_$bookUri")
+        } else {
+            editor.putString("book_status_$bookUri", filterId)
+        }
+        editor.apply()
+    }
+
+    private fun showAssignBookStatusDialog(book: BookEntry) {
+        val currentAssigned = getBookAssignedStatus(book.uriString)
+        val selectable = libraryFilters.filter { !it.isSmartInProgress && !it.isSmartNotStarted }
+        val options = mutableListOf<Pair<String, String?>>()
+        for (f in selectable) {
+            val mark = if (currentAssigned == f.id) "✓ " else ""
+            options.add(Pair("$mark${f.label}", f.id))
+        }
+        options.add(Pair("Без статуса (по прогрессу)", null))
+
+        val labels = options.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(book.title)
+            .setItems(labels) { _, which ->
+                val chosenId = options[which].second
+                setBookAssignedStatus(book.uriString, chosenId)
+                renderFilteredLibrary()
+                val chosenLabel = selectable.firstOrNull { it.id == chosenId }?.label
+                Toast.makeText(
+                    this,
+                    if (chosenLabel != null) "Статус: $chosenLabel" else "Статус сброшен",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
+    }
+
+    private fun showManageFiltersDialog() {
+        val itemsText = Array(libraryFilters.size) { i ->
+            val f = libraryFilters[i]
+            val kind = when {
+                f.isSmartInProgress -> "авто: по прогрессу"
+                f.isSmartNotStarted -> "авто: не начатые"
+                else -> "ручной статус"
+            }
+            "${f.label} ($kind)"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Настройка фильтров")
+            .setItems(itemsText) { _, which ->
+                showEditSingleFilterDialog(which)
+            }
+            .setPositiveButton("+ Добавить") { _, _ ->
+                showAddFilterDialog()
+            }
+            .setNeutralButton("Сбросить") { _, _ ->
+                libraryFilters = defaultLibraryFilters()
+                selectedFilterId = "all"
+                saveLibraryFilters()
+                rebuildFilterChips()
+                renderFilteredLibrary()
+                Toast.makeText(this, "Фильтры сброшены", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun showAddFilterDialog() {
+        val input = EditText(this).apply {
+            hint = "Например: Планирую или Забросил"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setSingleLine(true)
+        }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Новый фильтр")
+            .setView(wrap)
+            .setPositiveButton("Добавить") { _, _ ->
+                val label = input.text?.toString()?.trim() ?: ""
+                if (label.isEmpty()) {
+                    Toast.makeText(this, "Введите название фильтра", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val id = "custom_${System.currentTimeMillis()}"
+                libraryFilters.add(LibraryFilterItem(id = id, label = label))
+                saveLibraryFilters()
+                rebuildFilterChips()
+                renderFilteredLibrary()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun showEditSingleFilterDialog(index: Int) {
+        if (index !in libraryFilters.indices) return
+        val item = libraryFilters[index]
+        val input = EditText(this).apply {
+            setText(item.label)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setSingleLine(true)
+        }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(input)
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Изменить фильтр")
+            .setView(wrap)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val newLabel = input.text?.toString()?.trim() ?: ""
+                if (newLabel.isNotEmpty()) {
+                    libraryFilters[index] = item.copy(label = newLabel)
+                    saveLibraryFilters()
+                    rebuildFilterChips()
+                    renderFilteredLibrary()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+
+        if (libraryFilters.size > 1) {
+            builder.setNeutralButton("Удалить") { _, _ ->
+                if (selectedFilterId == item.id) {
+                    selectedFilterId = "all"
+                }
+                libraryFilters.removeAt(index)
+                saveLibraryFilters()
+                rebuildFilterChips()
+                renderFilteredLibrary()
+            }
+        }
+        builder.show()
     }
 
     private fun isSmartRewindEnabled(): Boolean {
@@ -632,6 +855,42 @@ class MainActivity : Activity() {
             addView(clearSearchBtn)
         }
 
+        filterChipsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        filterChipsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+            addView(filterChipsRow)
+        }
+
+        editFiltersBtn = TextView(this).apply {
+            text = "✎"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setPadding(dp(11), dp(7), dp(11), dp(7))
+            setOnClickListener { showManageFiltersDialog() }
+        }
+
+        filterRowLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+            addView(filterChipsScroll)
+            addView(editFiltersBtn)
+        }
+
+        rebuildFilterChips()
+
         libraryStatusView = TextView(this).apply {
             text = "Папка библиотеки не выбрана"
             textSize = 14f
@@ -649,6 +908,7 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
         libraryContainer.addView(searchBarContainer)
+        libraryContainer.addView(filterRowLayout)
         libraryContainer.addView(libraryStatusView)
         libraryContainer.addView(scrollView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -861,6 +1121,53 @@ class MainActivity : Activity() {
         rootLayout.addView(bottomNavBar)
 
         setContentView(rootLayout)
+    }
+
+    private fun rebuildFilterChips() {
+        if (!::filterChipsRow.isInitialized) return
+        filterChipsRow.removeAllViews()
+        val t = currentTheme
+
+        val allItems = mutableListOf(LibraryFilterItem(id = "all", label = "Все"))
+        allItems.addAll(libraryFilters)
+
+        for (i in allItems.indices) {
+            val item = allItems[i]
+            val selected = selectedFilterId == item.id
+            val chip = TextView(this).apply {
+                text = item.label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat()
+                    setColor(if (selected) t.activeCard else t.surface)
+                }
+                setTextColor(if (selected) t.textPrimary else t.textSecondary)
+                typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    if (i < allItems.lastIndex) marginEnd = dp(8)
+                }
+                setOnClickListener {
+                    selectedFilterId = item.id
+                    rebuildFilterChips()
+                    renderFilteredLibrary()
+                }
+            }
+            filterChipsRow.addView(chip)
+        }
+
+        if (::editFiltersBtn.isInitialized) {
+            editFiltersBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(t.surface)
+            }
+            editFiltersBtn.setTextColor(t.textPrimary)
+        }
     }
 
     private fun updateRewindCard() {
@@ -1894,6 +2201,7 @@ class MainActivity : Activity() {
         searchInput.setTextColor(t.textPrimary)
         searchInput.setHintTextColor(t.textSecondary)
         clearSearchBtn.setTextColor(t.textSecondary)
+        rebuildFilterChips()
         libraryStatusView.setTextColor(t.textSecondary)
 
         settingsTitleView.setTextColor(t.textPrimary)
@@ -2219,14 +2527,22 @@ class MainActivity : Activity() {
         val activeUri = prefs.getString("folder_uri", null)
         val rawQuery = searchInput.text?.toString()?.trim()?.lowercase() ?: ""
         val terms = rawQuery.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val activeFilterObj = libraryFilters.firstOrNull { it.id == selectedFilterId }
 
-        val filtered = if (terms.isEmpty()) {
-            cachedBooks
-        } else {
-            cachedBooks.filter { book ->
-                val haystack = "${book.title} ${book.subtitle}".lowercase()
-                terms.all { haystack.contains(it) }
+        val filtered = cachedBooks.filter { book ->
+            val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
+            val assignedStatus = getBookAssignedStatus(book.uriString)
+            val matchesFilter = when {
+                selectedFilterId == "all" || activeFilterObj == null -> true
+                activeFilterObj.isSmartInProgress -> savedIdx >= 0 && assignedStatus == null
+                activeFilterObj.isSmartNotStarted -> savedIdx < 0 && assignedStatus == null
+                else -> assignedStatus == activeFilterObj.id
             }
+            if (!matchesFilter) return@filter false
+
+            if (terms.isEmpty()) return@filter true
+            val haystack = "${book.title} ${book.subtitle}".lowercase()
+            terms.all { haystack.contains(it) }
         }
 
         libraryListLayout.removeAllViews()
@@ -2235,15 +2551,23 @@ class MainActivity : Activity() {
             return
         }
 
-        libraryStatusView.text = if (terms.isEmpty()) {
+        val hasFilterOrSearch = selectedFilterId != "all" || terms.isNotEmpty()
+        libraryStatusView.text = if (!hasFilterOrSearch) {
             "Найдено книг: ${cachedBooks.size}"
         } else {
             "Найдено: ${filtered.size} из ${cachedBooks.size}"
         }
 
         if (filtered.isEmpty()) {
+            val emptyMsg = if (terms.isNotEmpty()) {
+                "Ничего не найдено по запросу «${searchInput.text?.toString()?.trim()}»"
+            } else if (activeFilterObj != null) {
+                "Нет книг в фильтре «${activeFilterObj.label}» (долгое нажатие на книге задаёт статус)"
+            } else {
+                "Ничего не найдено"
+            }
             val emptyTv = TextView(this).apply {
-                text = "Ничего не найдено по запросу «${searchInput.text?.toString()?.trim()}»"
+                text = emptyMsg
                 textSize = 14f
                 setTextColor(currentTheme.textSecondary)
                 setPadding(dp(4), dp(12), dp(4), dp(12))
@@ -2308,6 +2632,9 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
         val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
+        val assignedLabel = getBookAssignedStatus(book.uriString)?.let { id ->
+            libraryFilters.firstOrNull { it.id == id }?.label
+        }
         val t = currentTheme
 
         val card = LinearLayout(this).apply {
@@ -2326,6 +2653,10 @@ class MainActivity : Activity() {
             setOnClickListener {
                 switchToBook(book.uriString)
             }
+            setOnLongClickListener {
+                showAssignBookStatusDialog(book)
+                true
+            }
         }
 
         val titleTv = TextView(this).apply {
@@ -2334,10 +2665,10 @@ class MainActivity : Activity() {
             setTextColor(t.textPrimary)
         }
 
-        val progressText = if (savedIdx >= 0) {
-            "Глава ${savedIdx + 1} • ${formatTime(savedPos)}"
-        } else {
-            "Не начата"
+        val progressText = when {
+            assignedLabel != null -> assignedLabel
+            savedIdx >= 0 -> "Глава ${savedIdx + 1} • ${formatTime(savedPos)}"
+            else -> "Не начата"
         }
 
         val subTv = TextView(this).apply {
