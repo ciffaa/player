@@ -15,6 +15,10 @@ import android.graphics.Outline
 import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -53,6 +57,7 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import kotlin.math.sqrt
 
 data class BookEntry(
     val title: String,
@@ -88,7 +93,7 @@ data class BadgeOption(
     val drawableRes: Int
 )
 
-class MainActivity : Activity() {
+class MainActivity : Activity(), SensorEventListener {
 
     private val themes = listOf(
         AppTheme(
@@ -207,6 +212,9 @@ class MainActivity : Activity() {
     private lateinit var rewindCard: LinearLayout
     private lateinit var rewindTitle: TextView
     private lateinit var rewindStatus: TextView
+    private lateinit var shakeCard: LinearLayout
+    private lateinit var shakeTitle: TextView
+    private lateinit var shakeStatus: TextView
     private lateinit var aiSectionLabel: TextView
     private lateinit var aiKeyCard: LinearLayout
     private lateinit var aiKeyTitle: TextView
@@ -227,7 +235,15 @@ class MainActivity : Activity() {
     private var lastArtworkSize = -1
     private var lastCoverBookUri: String? = null
     private val attemptedCoverSearch = mutableSetOf<String>()
+
     private var sleepTimerEndMs = 0L
+    private val sleepFadeDurationMs = 30_000L
+    private var isFadingVolume = false
+
+    private var sensorManager: SensorManager? = null
+    private var accelerometer: Sensor? = null
+    private var isShakeRegistered = false
+    private var lastShakeExtendAtMs = 0L
 
     private var wasPlayingPreviously = false
     private var pauseRecordedAtMs = 0L
@@ -237,7 +253,7 @@ class MainActivity : Activity() {
         override fun run() {
             checkSleepTimer()
             updateProgressOnly()
-            handler.postDelayed(this, 500)
+            handler.postDelayed(this, 250)
         }
     }
 
@@ -245,6 +261,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         bookmarksManager = BookmarksManager(this)
         m4bChaptersReader = M4bChaptersReader(this)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -271,6 +289,56 @@ class MainActivity : Activity() {
         }
 
         showTab(0)
+    }
+
+    private fun isShakeToExtendEnabled(): Boolean {
+        return getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+            .getBoolean("shake_timer_extend_enabled", true)
+    }
+
+    private fun syncShakeListener() {
+        val mgr = sensorManager
+        val acc = accelerometer
+        if (mgr == null || acc == null) return
+
+        val shouldListen = sleepTimerEndMs > 0L && isShakeToExtendEnabled() && !isFinishing && !isDestroyed
+        if (shouldListen && !isShakeRegistered) {
+            isShakeRegistered = mgr.registerListener(this, acc, SensorManager.SENSOR_DELAY_UI)
+        } else if (!shouldListen && isShakeRegistered) {
+            mgr.unregisterListener(this)
+            isShakeRegistered = false
+        }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        if (sleepTimerEndMs <= 0L || !isShakeToExtendEnabled()) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastShakeExtendAtMs < 3_000L) return
+
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
+        val gForce = sqrt((x * x + y * y + z * z).toDouble()) / SensorManager.GRAVITY_EARTH
+
+        if (gForce > 2.35) {
+            lastShakeExtendAtMs = now
+            val baseTime = maxOf(now, sleepTimerEndMs)
+            sleepTimerEndMs = baseTime + 10 * 60_000L
+            restorePlaybackVolumeIfNeeded()
+            updateTimerButton()
+            Toast.makeText(this, "Таймер продлён на 10 мин", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    private fun restorePlaybackVolumeIfNeeded() {
+        if (isFadingVolume) {
+            controller?.volume = 1.0f
+            isFadingVolume = false
+        }
     }
 
     private fun defaultLibraryFilters(): MutableList<LibraryFilterItem> {
@@ -503,6 +571,9 @@ class MainActivity : Activity() {
             pauseRecordedAtMs = now
             saveCurrentProgress()
         } else if (!wasPlayingPreviously && isPlayingNow) {
+            if (sleepTimerEndMs <= 0L) {
+                restorePlaybackVolumeIfNeeded()
+            }
             if (suppressNextRewindOnce) {
                 suppressNextRewindOnce = false
                 pauseRecordedAtMs = 0L
@@ -983,7 +1054,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(4)
+                bottomMargin = dp(8)
             }
             setOnClickListener {
                 val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
@@ -998,6 +1069,41 @@ class MainActivity : Activity() {
             }
             addView(rewindTitle)
             addView(rewindStatus)
+        }
+
+        shakeTitle = TextView(this).apply {
+            text = "Продление таймера сна встряхиванием"
+            textSize = 16f
+        }
+
+        shakeStatus = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, dp(4), 0, 0)
+        }
+
+        shakeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
+            }
+            setOnClickListener {
+                val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
+                val nextVal = !isShakeToExtendEnabled()
+                prefs.edit().putBoolean("shake_timer_extend_enabled", nextVal).apply()
+                updateShakeCard()
+                syncShakeListener()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (nextVal) "Продление встряхиванием включено" else "Продление встряхиванием выключено",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            addView(shakeTitle)
+            addView(shakeStatus)
         }
 
         aiSectionLabel = TextView(this).apply {
@@ -1068,6 +1174,7 @@ class MainActivity : Activity() {
         settingsContainer.addView(badgeButtonsContainer)
         settingsContainer.addView(rewindSectionLabel)
         settingsContainer.addView(rewindCard)
+        settingsContainer.addView(shakeCard)
         settingsContainer.addView(aiSectionLabel)
         settingsContainer.addView(aiKeyCard)
         settingsContainer.addView(helpSectionLabel)
@@ -1183,6 +1290,22 @@ class MainActivity : Activity() {
             "Включён: откат 10–45 сек после паузы от 1 мин"
         } else {
             "Выключен — нажмите, чтобы включить"
+        }
+    }
+
+    private fun updateShakeCard() {
+        val enabled = isShakeToExtendEnabled()
+        val t = currentTheme
+        shakeCard.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            setColor(if (enabled) t.activeCard else t.surface)
+        }
+        shakeTitle.setTextColor(t.textPrimary)
+        shakeStatus.setTextColor(t.textSecondary)
+        shakeStatus.text = if (enabled) {
+            "Включено: встряхивание добавляет +10 мин при активном таймере"
+        } else {
+            "Выключено — нажмите, чтобы включить"
         }
     }
 
@@ -1333,7 +1456,7 @@ class MainActivity : Activity() {
             Воспроизведение:
             • 1x — переключение скорости (до 2x).
             • ↺ 15 и 30 ↻ — перемотка назад на 15 сек и вперёд на 30 сек.
-            • ⏱ — таймер сна.
+            • ⏱ — таймер сна с плавным затуханием звука за 30 сек до конца и продлением встряхиванием (+10 мин).
             • Умный автооткат после паузы — мягко сдвигает позицию назад при возвращении после паузы от 1 минуты.
         """.trimIndent()
 
@@ -2219,6 +2342,7 @@ class MainActivity : Activity() {
         rebuildThemeButtons()
         rebuildBadgeButtons()
         updateRewindCard()
+        updateShakeCard()
         updateAiKeyCard()
 
         bottomNavBar.setBackgroundColor(t.navBg)
@@ -2376,20 +2500,44 @@ class MainActivity : Activity() {
             .setItems(options) { _, which ->
                 val min = minutes[which]
                 sleepTimerEndMs = if (min == 0) 0L else System.currentTimeMillis() + min * 60_000L
+                if (sleepTimerEndMs <= 0L) {
+                    restorePlaybackVolumeIfNeeded()
+                }
+                syncShakeListener()
                 updateTimerButton()
             }
             .show()
     }
 
     private fun checkSleepTimer() {
-        if (sleepTimerEndMs > 0L) {
-            if (System.currentTimeMillis() >= sleepTimerEndMs) {
-                sleepTimerEndMs = 0L
-                controller?.pause()
-                saveCurrentProgress()
-            }
-            updateTimerButton()
+        if (sleepTimerEndMs <= 0L) {
+            syncShakeListener()
+            return
         }
+
+        val now = System.currentTimeMillis()
+        val remainingMs = sleepTimerEndMs - now
+
+        if (remainingMs <= 0L) {
+            sleepTimerEndMs = 0L
+            controller?.pause()
+            restorePlaybackVolumeIfNeeded()
+            saveCurrentProgress()
+            syncShakeListener()
+            updateTimerButton()
+            return
+        }
+
+        if (remainingMs <= sleepFadeDurationMs) {
+            isFadingVolume = true
+            val factor = (remainingMs.toFloat() / sleepFadeDurationMs.toFloat()).coerceIn(0.0f, 1.0f)
+            controller?.volume = factor
+        } else if (isFadingVolume) {
+            restorePlaybackVolumeIfNeeded()
+        }
+
+        syncShakeListener()
+        updateTimerButton()
     }
 
     private fun updateTimerButton() {
@@ -2397,8 +2545,13 @@ class MainActivity : Activity() {
             timerBtn.text = "⏱"
             timerBtn.setTextColor(currentTheme.textPrimary)
         } else {
-            val leftMin = ((sleepTimerEndMs - System.currentTimeMillis()) / 60_000L) + 1
-            timerBtn.text = "${leftMin}м"
+            val leftMs = (sleepTimerEndMs - System.currentTimeMillis()).coerceAtLeast(0L)
+            val label = if (leftMs < 60_000L) {
+                "${((leftMs + 999L) / 1000L)}с"
+            } else {
+                "${(leftMs / 60_000L) + 1}м"
+            }
+            timerBtn.text = label
             timerBtn.setTextColor(currentTheme.timerActive)
         }
     }
@@ -2458,6 +2611,9 @@ class MainActivity : Activity() {
             controller = controllerFuture?.get()
             controller?.let { p ->
                 wasPlayingPreviously = p.isPlaying
+                if (sleepTimerEndMs <= 0L) {
+                    p.volume = 1.0f
+                }
                 p.addListener(object : Player.Listener {
                     override fun onEvents(player: Player, events: Player.Events) {
                         handlePlaybackStateTransition(player)
@@ -2467,12 +2623,14 @@ class MainActivity : Activity() {
             }
             restoreSavedBookIfEmpty()
             updateUI()
+            syncShakeListener()
             handler.post(updateProgressTask)
         }, ContextCompat.getMainExecutor(this))
     }
 
     override fun onStop() {
         saveCurrentProgress()
+        restorePlaybackVolumeIfNeeded()
         val player = controller
         if (player != null && !player.isPlaying && wasPlayingPreviously) {
             getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
@@ -2481,6 +2639,10 @@ class MainActivity : Activity() {
                 .apply()
         }
         handler.removeCallbacks(updateProgressTask)
+        if (isShakeRegistered) {
+            sensorManager?.unregisterListener(this)
+            isShakeRegistered = false
+        }
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controller = null
         wasPlayingPreviously = false
