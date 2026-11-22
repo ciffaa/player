@@ -1,6 +1,7 @@
 package com.audiobook.player
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
@@ -37,6 +38,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -250,6 +252,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastCoverBookUri: String? = null
     private val attemptedCoverSearch = mutableSetOf<String>()
     private var detectedAuthorForCurrentBook: String = ""
+    private var glowAnimator: ValueAnimator? = null
 
     private var sleepTimerEndMs = 0L
     private val sleepFadeDurationMs = 30_000L
@@ -295,6 +298,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         loadLibraryFilters()
         buildUI()
+        setupGlowAnimator()
         applyTheme()
         updateLibraryFolderLabel()
 
@@ -308,6 +312,39 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         showTab(0)
+    }
+
+    private fun setupGlowAnimator() {
+        glowAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 3600L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { anim ->
+                val t = anim.animatedValue as Float
+                if (!::coverGlowView.isInitialized) return@addUpdateListener
+                val scale = 0.96f + 0.08f * t
+                coverGlowView.scaleX = scale
+                coverGlowView.scaleY = scale
+                coverGlowView.alpha = 0.72f + 0.28f * t
+            }
+        }
+    }
+
+    private fun syncGlowAnimationState(isPlaying: Boolean) {
+        val anim = glowAnimator ?: return
+        val activePlayerScreen = currentTab == 0 && !isFinishing && !isDestroyed
+        if (isPlaying && activePlayerScreen) {
+            if (!anim.isStarted) {
+                anim.start()
+            } else if (anim.isPaused) {
+                anim.resume()
+            }
+        } else {
+            if (anim.isStarted && !anim.isPaused) {
+                anim.pause()
+            }
+        }
     }
 
     private fun extractAuthorFromBookUri(bookUriStr: String?): String {
@@ -1431,7 +1468,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildSoftGlowBitmap(baseColor: Int): Bitmap {
-        val size = 320
+        val size = 360
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val cx = size * 0.5f
@@ -1442,9 +1479,9 @@ class MainActivity : Activity(), SensorEventListener {
         val g = Color.green(baseColor)
         val b = Color.blue(baseColor)
 
-        val inner = Color.argb(190, r, g, b)
-        val mid = Color.argb(95, r, g, b)
-        val outer = Color.argb(28, r, g, b)
+        val inner = Color.argb(215, r, g, b)
+        val mid = Color.argb(120, r, g, b)
+        val outer = Color.argb(42, r, g, b)
         val edge = Color.argb(0, r, g, b)
 
         val shader = RadialGradient(
@@ -1452,7 +1489,7 @@ class MainActivity : Activity(), SensorEventListener {
             cy,
             radius,
             intArrayOf(inner, mid, outer, edge),
-            floatArrayOf(0.0f, 0.52f, 0.78f, 1.0f),
+            floatArrayOf(0.0f, 0.54f, 0.79f, 1.0f),
             Shader.TileMode.CLAMP
         )
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1471,8 +1508,8 @@ class MainActivity : Activity(), SensorEventListener {
                 var sumG = 0
                 var sumB = 0
                 var count = 0
-                for (y in 4 until 20) {
-                    for (x in 4 until 20) {
+                for (y in 3 until 21) {
+                    for (x in 3 until 21) {
                         val px = scaled.getPixel(x, y)
                         sumR += Color.red(px)
                         sumG += Color.green(px)
@@ -1484,17 +1521,22 @@ class MainActivity : Activity(), SensorEventListener {
                 val avgR = (sumR / count.coerceAtLeast(1))
                 val avgG = (sumG / count.coerceAtLeast(1))
                 val avgB = (sumB / count.coerceAtLeast(1))
-                if (t.id == "dark_green") {
-                    Color.rgb(
+                when (t.id) {
+                    "dark_green" -> Color.rgb(
                         (avgR + 102) / 2,
                         (avgG + 187) / 2,
                         (avgB + 106) / 2
                     )
-                } else {
-                    Color.rgb(avgR, avgG, avgB)
+                    "dark" -> Color.rgb(
+                        minOf(255, (avgR * 1.15f).toInt() + 18),
+                        minOf(255, (avgG * 1.15f).toInt() + 18),
+                        minOf(255, (avgB * 1.15f).toInt() + 18)
+                    )
+                    else -> Color.rgb(avgR, avgG, avgB)
                 }
             }
             t.id == "dark_green" -> Color.parseColor("#66BB6A")
+            t.id == "dark" -> Color.parseColor("#64B5F6")
             else -> t.accentBg
         }
 
@@ -2827,6 +2869,7 @@ class MainActivity : Activity(), SensorEventListener {
         libraryContainer.visibility = if (tabIndex == 1) View.VISIBLE else View.GONE
         settingsScrollView.visibility = if (tabIndex == 2) View.VISIBLE else View.GONE
         updateNavColors()
+        syncGlowAnimationState(controller?.isPlaying == true)
         if (tabIndex == 1) scanLibrary()
     }
 
@@ -2976,6 +3019,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onStop() {
         saveCurrentProgress()
         restorePlaybackVolumeIfNeeded()
+        glowAnimator?.pause()
         val player = controller
         if (player != null && !player.isPlaying && wasPlayingPreviously) {
             getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
@@ -2992,6 +3036,15 @@ class MainActivity : Activity(), SensorEventListener {
         controller = null
         wasPlayingPreviously = false
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        glowAnimator?.cancel()
+        glowAnimator = null
+        val d = coverGlowView.drawable as? BitmapDrawable
+        coverGlowView.setImageDrawable(null)
+        d?.bitmap?.recycle()
+        super.onDestroy()
     }
 
     @Deprecated("Deprecated in Java")
@@ -3602,6 +3655,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         playPauseBtn.setImageResource(if (player.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        syncGlowAnimationState(player.isPlaying)
         updateProgressOnly()
     }
 
