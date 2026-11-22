@@ -215,6 +215,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var libraryListLayout: LinearLayout
     private var cachedBooks: List<BookEntry> = emptyList()
     private val bookCoverCache = mutableMapOf<String, Bitmap?>()
+    private var isFetchingLibraryCovers = false
+    private var libraryCoverFetchGeneration = 0
 
     private lateinit var settingsTitleView: TextView
     private lateinit var librarySectionLabel: TextView
@@ -1906,6 +1908,89 @@ class MainActivity : Activity(), SensorEventListener {
         return null
     }
 
+    private fun buildCoverSearchQueries(bookTitle: String, bookUriStr: String? = null): List<String> {
+        val authorFromPath = extractAuthorFromBookUri(bookUriStr)
+        val baseClean = normalizeQuery(bookTitle)
+        val withoutSeriesOrNum = baseClean
+            .replace(Regex("\\b(том|книга|часть|выпуск|ч\\.|т\\.|кн\\.)\\s*\\d+\\b", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        val list = mutableListOf<String>()
+        if (authorFromPath.isNotEmpty() && !baseClean.contains(authorFromPath, ignoreCase = true)) {
+            list.add("$authorFromPath $baseClean".trim())
+        }
+        if (baseClean.isNotEmpty()) list.add(baseClean)
+        if (withoutSeriesOrNum.isNotEmpty() && !list.contains(withoutSeriesOrNum)) {
+            list.add(withoutSeriesOrNum)
+        }
+        return list
+    }
+
+    private fun fetchCoverBitmapForBook(bookTitle: String, bookUriStr: String? = null): Bitmap? {
+        val queries = buildCoverSearchQueries(bookTitle, bookUriStr)
+        for (q in queries) {
+            if (q.isEmpty()) continue
+            val bmp = fetchCoverFromGoogleBooks(q) ?: fetchCoverFromItunes(q)
+            if (bmp != null) return bmp
+        }
+        return null
+    }
+
+    private fun prefetchMissingLibraryCoversAsync(books: List<BookEntry>) {
+        val missing = books.filter { book ->
+            val cached = bookCoverCache[book.uriString]
+            val autoExists = getCoverFile(book.uriString, custom = false).exists()
+            val customExists = getCoverFile(book.uriString, custom = true).exists()
+            cached == null && !autoExists && !customExists
+        }
+        if (missing.isEmpty()) return
+
+        val gen = ++libraryCoverFetchGeneration
+        if (isFetchingLibraryCovers) return
+        isFetchingLibraryCovers = true
+
+        Thread {
+            try {
+                for (book in missing) {
+                    if (isFinishing || isDestroyed || gen != libraryCoverFetchGeneration) return@Thread
+                    val autoFile = getCoverFile(book.uriString, custom = false)
+                    if (autoFile.exists()) {
+                        val existingBmp = BitmapFactory.decodeFile(autoFile.absolutePath)
+                        if (existingBmp != null) {
+                            bookCoverCache[book.uriString] = existingBmp
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1) {
+                                    renderFilteredLibrary()
+                                }
+                            }
+                            continue
+                        }
+                    }
+
+                    val fetched = fetchCoverBitmapForBook(book.title, book.uriString)
+                    if (fetched != null) {
+                        saveBitmapToFile(fetched, autoFile, 600)
+                        val savedBmp = BitmapFactory.decodeFile(autoFile.absolutePath) ?: fetched
+                        bookCoverCache[book.uriString] = savedBmp
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed && isGridViewMode && currentTab == 1) {
+                                renderFilteredLibrary()
+                            }
+                        }
+                    }
+                    try {
+                        Thread.sleep(160L)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                }
+            } finally {
+                isFetchingLibraryCovers = false
+            }
+        }.start()
+    }
+
     private fun saveBitmapToFile(bmp: Bitmap, target: File, maxSize: Int) {
         val w = bmp.width
         val h = bmp.height
@@ -2019,8 +2104,7 @@ class MainActivity : Activity(), SensorEventListener {
         asCustom: Boolean,
         notifyIfNotFound: Boolean
     ) {
-        val cleanQuery = normalizeQuery(bookTitle)
-        val bmp = fetchCoverFromGoogleBooks(cleanQuery) ?: fetchCoverFromItunes(cleanQuery)
+        val bmp = fetchCoverBitmapForBook(bookTitle, bookUriStr)
         if (bmp != null) {
             val target = getCoverFile(bookUriStr, custom = asCustom)
             saveBitmapToFile(bmp, target, 600)
@@ -3047,6 +3131,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onDestroy() {
+        libraryCoverFetchGeneration++
         glowAnimator?.cancel()
         glowAnimator = null
         val d = coverGlowView.drawable as? BitmapDrawable
@@ -3156,6 +3241,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         if (isGridViewMode) {
             renderBooksGrid(filtered, activeUri)
+            prefetchMissingLibraryCoversAsync(filtered)
         } else {
             for (book in filtered) {
                 libraryListLayout.addView(createBookCard(book, book.uriString == activeUri))
