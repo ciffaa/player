@@ -1806,7 +1806,7 @@ class MainActivity : Activity(), SensorEventListener {
 
             Обложки и Библиотека:
             • Родная обложка (из папки книги или тегов аудиофайла) всегда имеет приоритет; поиск в интернете запускается только если родной обложки нет.
-            • Переключатель «⊞ / ☰» в Библиотеке меняет вид между сеткой блоков с обложками и полупрозрачным прогрессом и обычным списком.
+            • Переключатель «⊞ / ☰» в Библиотеке меняет вид между квадратной сеткой 1:1 и обычным списком.
             • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
 
             Описание и пересказ сюжета:
@@ -3366,13 +3366,18 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun computeSquareTileSizePx(gapPx: Int): Int {
+        val availableWidth = (resources.displayMetrics.widthPixels - dp(40) - gapPx).coerceAtLeast(dp(200))
+        return availableWidth / 2
+    }
+
     private fun renderBooksGrid(books: List<BookEntry>, activeUri: String?) {
         val gap = dp(10)
+        val tileSize = computeSquareTileSizePx(gap)
         var i = 0
         while (i < books.size) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                weightSum = 2f
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -3381,25 +3386,21 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
 
-            val leftCard = createBookGridTile(books[i], books[i].uriString == activeUri).apply {
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = gap / 2
+            val leftCard = createBookGridTile(books[i], books[i].uriString == activeUri, tileSize).apply {
+                layoutParams = LinearLayout.LayoutParams(tileSize, tileSize).apply {
+                    marginEnd = gap
                 }
             }
             row.addView(leftCard)
 
             if (i + 1 < books.size) {
-                val rightCard = createBookGridTile(books[i + 1], books[i + 1].uriString == activeUri).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                        marginStart = gap / 2
-                    }
+                val rightCard = createBookGridTile(books[i + 1], books[i + 1].uriString == activeUri, tileSize).apply {
+                    layoutParams = LinearLayout.LayoutParams(tileSize, tileSize)
                 }
                 row.addView(rightCard)
             } else {
                 val spacer = View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f).apply {
-                        marginStart = gap / 2
-                    }
+                    layoutParams = LinearLayout.LayoutParams(tileSize, tileSize)
                 }
                 row.addView(spacer)
             }
@@ -3409,7 +3410,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    private fun createBookGridTile(book: BookEntry, isActive: Boolean): View {
+    private fun createBookGridTile(book: BookEntry, isActive: Boolean, tileSize: Int): View {
         val prefs = getSharedPreferences("audiobook_prefs", Context.MODE_PRIVATE)
         val savedIdx = prefs.getInt("idx_${book.uriString}", -1)
         val savedPos = prefs.getLong("pos_${book.uriString}", 0L)
@@ -3417,7 +3418,6 @@ class MainActivity : Activity(), SensorEventListener {
             libraryFilters.firstOrNull { it.id == id }?.label
         }
         val t = currentTheme
-        val tileHeight = dp(184)
 
         val frame = FrameLayout(this).apply {
             background = GradientDrawable().apply {
@@ -3431,10 +3431,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
             clipToOutline = true
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                tileHeight
-            )
+            layoutParams = LinearLayout.LayoutParams(tileSize, tileSize)
             setOnClickListener { switchToBook(book.uriString) }
             setOnLongClickListener {
                 showAssignBookStatusDialog(book)
@@ -3476,7 +3473,7 @@ class MainActivity : Activity(), SensorEventListener {
                     Color.parseColor("#E6090C0A")
                 )
             )
-            setPadding(dp(10), dp(18), dp(10), dp(8))
+            setPadding(dp(10), dp(16), dp(10), dp(8))
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
