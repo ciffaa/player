@@ -93,13 +93,193 @@ data class AppTheme(
     val navBg: Int,
     val navActive: Int,
     val navInactive: Int,
-    val timerActive: Int
+    val timerActive: Int,
+    val borderColor: Int = Color.TRANSPARENT,
+    val isNothingStyle: Boolean = false
 )
 
 data class BadgeOption(
     val id: String,
     val drawableRes: Int
 )
+
+/**
+ * Кастомный TextView с поддержкой точечного рендера (N-Dot Matrix) в стиле Nothing OS.
+ * В обычных темах работает как стандартный TextView; при включении dotMode отрисовывает
+ * символы матрицей 5x7 круглых точек с поддержкой кириллицы, латиницы и цифр.
+ */
+class NothingDotTextView(context: Context) : TextView(context) {
+    var dotMode: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        if (!dotMode) {
+            super.onDraw(canvas)
+            return
+        }
+
+        val raw = text?.toString() ?: return
+        if (raw.isEmpty()) return
+
+        val upper = raw.uppercase()
+        dotPaint.color = currentTextColor
+
+        val availW = (width - paddingLeft - paddingRight).coerceAtLeast(1)
+        val availH = (height - paddingTop - paddingBottom).coerceAtLeast(1)
+
+        // Размер точки пропорционален textSize
+        val cellStep = (textSize * 0.135f).coerceAtLeast(2.2f)
+        val dotRadius = cellStep * 0.39f
+        val cols = 5
+        val rows = 7
+        val charW = cols * cellStep
+        val charGap = cellStep * 1.45f
+        val charH = rows * cellStep
+
+        val maxChars = ((availW + charGap) / (charW + charGap)).toInt().coerceAtLeast(1)
+        val displayStr = if (upper.length > maxChars && maxChars >= 2) {
+            upper.take(maxChars - 1) + "…"
+        } else {
+            upper.take(maxChars)
+        }
+
+        val totalW = displayStr.length * charW + (displayStr.length - 1).coerceAtLeast(0) * charGap
+        val startX = when (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) {
+            Gravity.CENTER_HORIZONTAL -> paddingLeft + (availW - totalW) * 0.5f
+            Gravity.END, Gravity.RIGHT -> paddingLeft + (availW - totalW)
+            else -> paddingLeft.toFloat()
+        }.coerceAtLeast(paddingLeft.toFloat())
+
+        val startY = paddingTop + (availH - charH) * 0.5f
+
+        var cursorX = startX
+        for (ch in displayStr) {
+            val glyph = DotGlyphs.glyphFor(ch)
+            for (r in 0 until rows) {
+                val rowBits = glyph[r]
+                for (c in 0 until cols) {
+                    if ((rowBits and (1 shl (cols - 1 - c))) != 0) {
+                        val cx = cursorX + c * cellStep + cellStep * 0.5f
+                        val cy = startY + r * cellStep + cellStep * 0.5f
+                        canvas.drawCircle(cx, cy, dotRadius, dotPaint)
+                    }
+                }
+            }
+            cursorX += charW + charGap
+        }
+    }
+
+    private object DotGlyphs {
+        private val SPACE = intArrayOf(0, 0, 0, 0, 0, 0, 0)
+        private val UNKNOWN = intArrayOf(0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111)
+
+        private val MAP: Map<Char, IntArray> = mapOf(
+            ' ' to SPACE,
+            '0' to intArrayOf(0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110),
+            '1' to intArrayOf(0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
+            '2' to intArrayOf(0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111),
+            '3' to intArrayOf(0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110),
+            '4' to intArrayOf(0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010),
+            '5' to intArrayOf(0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110),
+            '6' to intArrayOf(0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110),
+            '7' to intArrayOf(0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000),
+            '8' to intArrayOf(0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110),
+            '9' to intArrayOf(0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100),
+
+            ':' to intArrayOf(0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000),
+            '.' to intArrayOf(0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100),
+            ',' to intArrayOf(0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000),
+            '-' to intArrayOf(0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000),
+            '—' to intArrayOf(0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000),
+            '–' to intArrayOf(0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000),
+            '!' to intArrayOf(0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100),
+            '?' to intArrayOf(0b01110, 0b10001, 0b00001, 0b00110, 0b00100, 0b00000, 0b00100),
+            '%' to intArrayOf(0b11001, 0b11010, 0b00100, 0b00100, 0b01011, 0b10011, 0b00000),
+            '•' to intArrayOf(0b00000, 0b00000, 0b01110, 0b01110, 0b01110, 0b00000, 0b00000),
+            '…' to intArrayOf(0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b10101, 0b10101),
+            '/' to intArrayOf(0b00001, 0b00010, 0b00100, 0b00100, 0b01000, 0b10000, 0b00000),
+            '(' to intArrayOf(0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010),
+            ')' to intArrayOf(0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000),
+            '«' to intArrayOf(0b00000, 0b00101, 0b01010, 0b10100, 0b01010, 0b00101, 0b00000),
+            '»' to intArrayOf(0b00000, 0b10100, 0b01010, 0b00101, 0b01010, 0b10100, 0b00000),
+            'X' to intArrayOf(0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001),
+            '⏱' to intArrayOf(0b01110, 0b00100, 0b01110, 0b10101, 0b10111, 0b10001, 0b01110),
+
+            // Латиница
+            'A' to intArrayOf(0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+            'B' to intArrayOf(0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110),
+            'C' to intArrayOf(0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110),
+            'D' to intArrayOf(0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100),
+            'E' to intArrayOf(0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111),
+            'F' to intArrayOf(0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000),
+            'G' to intArrayOf(0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111),
+            'H' to intArrayOf(0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+            'I' to intArrayOf(0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
+            'J' to intArrayOf(0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100),
+            'K' to intArrayOf(0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001),
+            'L' to intArrayOf(0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111),
+            'M' to intArrayOf(0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001),
+            'N' to intArrayOf(0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001),
+            'O' to intArrayOf(0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
+            'P' to intArrayOf(0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000),
+            'Q' to intArrayOf(0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101),
+            'R' to intArrayOf(0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001),
+            'S' to intArrayOf(0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110),
+            'T' to intArrayOf(0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100),
+            'U' to intArrayOf(0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
+            'V' to intArrayOf(0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100),
+            'W' to intArrayOf(0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001),
+            'Y' to intArrayOf(0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100),
+            'Z' to intArrayOf(0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111),
+
+            // Кириллица
+            'А' to intArrayOf(0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+            'Б' to intArrayOf(0b11111, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b11110),
+            'В' to intArrayOf(0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110),
+            'Г' to intArrayOf(0b11111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000),
+            'Д' to intArrayOf(0b00110, 0b01010, 0b01010, 0b01010, 0b01010, 0b11111, 0b10001),
+            'Е' to intArrayOf(0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111),
+            'Ё' to intArrayOf(0b01010, 0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111),
+            'Ж' to intArrayOf(0b10101, 0b10101, 0b01110, 0b00100, 0b01110, 0b10101, 0b10101),
+            'З' to intArrayOf(0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110),
+            'И' to intArrayOf(0b10001, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b10001),
+            'Й' to intArrayOf(0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b10001),
+            'К' to intArrayOf(0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001),
+            'Л' to intArrayOf(0b00111, 0b01001, 0b01001, 0b01001, 0b01001, 0b01001, 0b10001),
+            'М' to intArrayOf(0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001),
+            'Н' to intArrayOf(0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+            'О' to intArrayOf(0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
+            'П' to intArrayOf(0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001),
+            'Р' to intArrayOf(0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000),
+            'С' to intArrayOf(0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110),
+            'Т' to intArrayOf(0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100),
+            'У' to intArrayOf(0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b10001, 0b01110),
+            'Ф' to intArrayOf(0b00100, 0b01110, 0b10101, 0b10101, 0b01110, 0b00100, 0b00100),
+            'Х' to intArrayOf(0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001),
+            'Ц' to intArrayOf(0b10010, 0b10010, 0b10010, 0b10010, 0b10010, 0b11111, 0b00001),
+            'Ч' to intArrayOf(0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b00001),
+            'Ш' to intArrayOf(0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b11111),
+            'Щ' to intArrayOf(0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b11111, 0b00001),
+            'Ъ' to intArrayOf(0b11000, 0b01000, 0b01000, 0b01110, 0b01001, 0b01001, 0b01110),
+            'Ы' to intArrayOf(0b10001, 0b10001, 0b10001, 0b11101, 0b10011, 0b10011, 0b11101),
+            'Ь' to intArrayOf(0b10000, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b11110),
+            'Э' to intArrayOf(0b01110, 0b10001, 0b00001, 0b00111, 0b00001, 0b10001, 0b01110),
+            'Ю' to intArrayOf(0b10010, 0b10101, 0b10101, 0b11101, 0b10101, 0b10101, 0b10010),
+            'Я' to intArrayOf(0b01111, 0b10001, 0b10001, 0b01111, 0b00101, 0b01001, 0b10001)
+        )
+
+        fun glyphFor(ch: Char): IntArray = MAP[ch] ?: UNKNOWN
+    }
+}
 
 class MainActivity : Activity(), SensorEventListener {
 
@@ -148,6 +328,23 @@ class MainActivity : Activity(), SensorEventListener {
             navActive = Color.parseColor("#66BB6A"),
             navInactive = Color.parseColor("#5B7A69"),
             timerActive = Color.parseColor("#A5D6A7")
+        ),
+        AppTheme(
+            id = "nothing",
+            name = "Nothing OS",
+            bg = Color.parseColor("#000000"),
+            surface = Color.parseColor("#111114"),
+            activeCard = Color.parseColor("#1C1C21"),
+            textPrimary = Color.parseColor("#FFFFFF"),
+            textSecondary = Color.parseColor("#8E8E93"),
+            accentBg = Color.parseColor("#D71921"),
+            accentText = Color.parseColor("#FFFFFF"),
+            navBg = Color.parseColor("#08080A"),
+            navActive = Color.parseColor("#D71921"),
+            navInactive = Color.parseColor("#636368"),
+            timerActive = Color.parseColor("#D71921"),
+            borderColor = Color.parseColor("#2B2B30"),
+            isNothingStyle = true
         )
     )
 
@@ -183,22 +380,22 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsScrollView: ScrollView
     private lateinit var settingsContainer: LinearLayout
 
-    private lateinit var topHeaderView: TextView
+    private lateinit var topHeaderView: NothingDotTextView
     private lateinit var coverGlowView: ImageView
     private lateinit var coverView: ImageView
     private lateinit var authorSubView: TextView
     private lateinit var bookTitleView: TextView
-    private lateinit var speedBtn: TextView
+    private lateinit var speedBtn: NothingDotTextView
     private lateinit var back15Btn: ImageView
     private lateinit var playPauseBtn: ImageView
     private lateinit var fwd30Btn: ImageView
-    private lateinit var timerBtn: TextView
+    private lateinit var timerBtn: NothingDotTextView
     private lateinit var chapterBtn: TextView
     private lateinit var bookmarkBtn: ImageView
     private lateinit var seekBar: SeekBar
-    private lateinit var elapsedTimeView: TextView
-    private lateinit var remainingTimeView: TextView
-    private lateinit var bookProgressTextView: TextView
+    private lateinit var elapsedTimeView: NothingDotTextView
+    private lateinit var remainingTimeView: NothingDotTextView
+    private lateinit var bookProgressTextView: NothingDotTextView
 
     private lateinit var searchBarContainer: LinearLayout
     private lateinit var searchInput: EditText
@@ -218,7 +415,7 @@ class MainActivity : Activity(), SensorEventListener {
     private val gridCoverViews = mutableMapOf<String, ImageView>()
     private var libraryCoverFetchGeneration = 0
 
-    private lateinit var settingsTitleView: TextView
+    private lateinit var settingsTitleView: NothingDotTextView
     private lateinit var librarySectionLabel: TextView
     private lateinit var pickLibraryBtn: Button
     private lateinit var libraryFolderPathView: TextView
@@ -314,6 +511,21 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         showTab(0)
+    }
+
+    private fun makeCardDrawable(
+        fillColor: Int,
+        radiusDp: Int = 14,
+        strokeColor: Int = currentTheme.borderColor,
+        strokeWidthDp: Int = if (currentTheme.isNothingStyle) 1 else 0
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor(fillColor)
+            if (strokeWidthDp > 0 && strokeColor != Color.TRANSPARENT) {
+                setStroke(dp(strokeWidthDp), strokeColor)
+            }
+        }
     }
 
     private fun setupGlowAnimator() {
@@ -804,14 +1016,14 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        topHeaderView = TextView(this).apply {
+        topHeaderView = NothingDotTextView(this).apply {
             text = ""
             textSize = 15.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(2), dp(12), dp(6))
+            setPadding(dp(12), dp(4), dp(12), dp(8))
             setOnClickListener {
                 val query = getActiveBookLookupTitle()
                 if (query.isNotEmpty()) {
@@ -938,8 +1150,8 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
 
-        fun makeTextAction(label: String, sizeSp: Float, onClick: () -> Unit): TextView {
-            return TextView(this).apply {
+        fun makeDotAction(label: String, sizeSp: Float, onClick: () -> Unit): NothingDotTextView {
+            return NothingDotTextView(this).apply {
                 text = label
                 textSize = sizeSp
                 gravity = Gravity.CENTER
@@ -949,7 +1161,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
 
-        speedBtn = makeTextAction("1x", 15.5f) { cycleSpeed() }
+        speedBtn = makeDotAction("1x", 15.5f) { cycleSpeed() }
 
         val backWrap = LinearLayout(this).apply {
             gravity = Gravity.CENTER
@@ -1011,7 +1223,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         fwdWrap.addView(fwd30Btn)
 
-        timerBtn = makeTextAction("⏱", 19f) { showSleepTimerDialog() }
+        timerBtn = makeDotAction("⏱", 19f) { showSleepTimerDialog() }
 
         controlsRow.addView(speedBtn)
         controlsRow.addView(backWrap)
@@ -1045,25 +1257,26 @@ class MainActivity : Activity(), SensorEventListener {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(4), dp(8), dp(6))
         }
-        elapsedTimeView = TextView(this).apply {
+        elapsedTimeView = NothingDotTextView(this).apply {
             text = "00:00"
             textSize = 13f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        remainingTimeView = TextView(this).apply {
+        remainingTimeView = NothingDotTextView(this).apply {
             text = "-00:00"
             textSize = 13f
-            gravity = Gravity.END
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         timeRow.addView(elapsedTimeView)
         timeRow.addView(remainingTimeView)
 
-        bookProgressTextView = TextView(this).apply {
+        bookProgressTextView = NothingDotTextView(this).apply {
             text = ""
             textSize = 12f
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(2), dp(8), dp(6))
+            setPadding(dp(8), dp(4), dp(8), dp(6))
         }
 
         playerContainer.addView(topHeaderView)
@@ -1230,10 +1443,11 @@ class MainActivity : Activity(), SensorEventListener {
             )
         }
 
-        settingsTitleView = TextView(this).apply {
+        settingsTitleView = NothingDotTextView(this).apply {
             text = "Настройки"
             textSize = 22f
             typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(8), dp(4), dp(20))
         }
 
@@ -1519,6 +1733,14 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updateCoverGlowColor(bmp: Bitmap?) {
         val t = currentTheme
+        if (t.isNothingStyle) {
+            val glowColor = Color.parseColor("#D71921")
+            val prevDrawable = coverGlowView.drawable as? BitmapDrawable
+            coverGlowView.setImageBitmap(buildSoftGlowBitmap(glowColor))
+            prevDrawable?.bitmap?.recycle()
+            return
+        }
+
         val glowSourceColor = when {
             bmp != null -> {
                 val scaled = Bitmap.createScaledBitmap(bmp, 24, 24, true)
@@ -1583,6 +1805,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (!::filterChipsRow.isInitialized) return
         filterChipsRow.removeAllViews()
         val t = currentTheme
+        val chipRadius = if (t.isNothingStyle) 20 else 10
 
         val allItems = mutableListOf(LibraryFilterItem(id = "all", label = "Все"))
         allItems.addAll(libraryFilters)
@@ -1591,16 +1814,27 @@ class MainActivity : Activity(), SensorEventListener {
             val item = allItems[i]
             val selected = selectedFilterId == item.id
             val chip = TextView(this).apply {
-                text = item.label
-                textSize = 13f
+                text = if (t.isNothingStyle) item.label.uppercase() else item.label
+                textSize = if (t.isNothingStyle) 12f else 13f
                 gravity = Gravity.CENTER
                 maxLines = 1
-                setPadding(dp(11), dp(7), dp(11), dp(7))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(10).toFloat()
-                    setColor(if (selected) t.activeCard else t.surface)
-                }
-                setTextColor(if (selected) t.textPrimary else t.textSecondary)
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                background = makeCardDrawable(
+                    fillColor = when {
+                        t.isNothingStyle && selected -> t.accentBg
+                        selected -> t.activeCard
+                        else -> t.surface
+                    },
+                    radiusDp = chipRadius,
+                    strokeColor = if (t.isNothingStyle && selected) t.accentBg else t.borderColor
+                )
+                setTextColor(
+                    when {
+                        t.isNothingStyle && selected -> t.accentText
+                        selected -> t.textPrimary
+                        else -> t.textSecondary
+                    }
+                )
                 typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1619,18 +1853,18 @@ class MainActivity : Activity(), SensorEventListener {
 
         if (::viewModeBtn.isInitialized) {
             viewModeBtn.text = if (isGridViewMode) "☰" else "⊞"
-            viewModeBtn.background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(if (isGridViewMode) t.activeCard else t.surface)
-            }
+            viewModeBtn.background = makeCardDrawable(
+                fillColor = if (isGridViewMode) t.activeCard else t.surface,
+                radiusDp = chipRadius
+            )
             viewModeBtn.setTextColor(if (isGridViewMode) t.textPrimary else t.textSecondary)
         }
 
         if (::editFiltersBtn.isInitialized) {
-            editFiltersBtn.background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(t.surface)
-            }
+            editFiltersBtn.background = makeCardDrawable(
+                fillColor = t.surface,
+                radiusDp = chipRadius
+            )
             editFiltersBtn.setTextColor(t.textPrimary)
         }
     }
@@ -1638,10 +1872,10 @@ class MainActivity : Activity(), SensorEventListener {
     private fun updateRewindCard() {
         val enabled = isSmartRewindEnabled()
         val t = currentTheme
-        rewindCard.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(if (enabled) t.activeCard else t.surface)
-        }
+        rewindCard.background = makeCardDrawable(
+            fillColor = if (enabled) t.activeCard else t.surface,
+            strokeColor = if (t.isNothingStyle && enabled) t.accentBg else t.borderColor
+        )
         rewindTitle.setTextColor(t.textPrimary)
         rewindStatus.setTextColor(t.textSecondary)
         rewindStatus.text = if (enabled) {
@@ -1654,10 +1888,10 @@ class MainActivity : Activity(), SensorEventListener {
     private fun updateShakeCard() {
         val enabled = isShakeToExtendEnabled()
         val t = currentTheme
-        shakeCard.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(if (enabled) t.activeCard else t.surface)
-        }
+        shakeCard.background = makeCardDrawable(
+            fillColor = if (enabled) t.activeCard else t.surface,
+            strokeColor = if (t.isNothingStyle && enabled) t.accentBg else t.borderColor
+        )
         shakeTitle.setTextColor(t.textPrimary)
         shakeStatus.setTextColor(t.textSecondary)
         shakeStatus.text = if (enabled) {
@@ -1750,7 +1984,11 @@ class MainActivity : Activity(), SensorEventListener {
         val remMs = (totalMs - elapsedMs).coerceAtLeast(0L)
         val pct = (ratio * 100.0).toInt().coerceIn(0, 100)
 
-        bookProgressTextView.text = "Книга: $pct% • Осталось ${formatTime(remMs)}"
+        bookProgressTextView.text = if (currentTheme.isNothingStyle) {
+            "$pct% • ${formatTime(remMs)}"
+        } else {
+            "Книга: $pct% • Осталось ${formatTime(remMs)}"
+        }
     }
 
     private fun refreshM4bChaptersIfNeeded(player: Player) {
@@ -1808,6 +2046,9 @@ class MainActivity : Activity(), SensorEventListener {
             • Родная обложка (из папки книги или тегов аудиофайла) всегда имеет приоритет; поиск в интернете запускается только если родной обложки нет.
             • Переключатель «⊞ / ☰» в Библиотеке меняет вид между квадратной сеткой 1:1 и обычным списком.
             • Долгое нажатие на книгу задаёт статус («Планирую», «Забросил» и др.), а выбор общей папки Books перенесён в Настройки.
+
+            Тема Nothing OS:
+            • В Настройках можно переключить интерфейс на стиль Nothing OS — с фирменными красными акцентами, контурными карточками и точечным матричным шрифтом (N-Dot).
 
             Описание и пересказ сюжета:
             • Нажмите на верхнюю строку названия книги, чтобы посмотреть аннотацию. Внутри есть кнопка «Освежить память» — Gemini кратко напомнит события до текущей отметки без спойлеров.
@@ -2372,10 +2613,10 @@ class MainActivity : Activity(), SensorEventListener {
         val key = prefs.getString("gemini_api_key", "")?.trim() ?: ""
         val t = currentTheme
 
-        aiKeyCard.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(if (key.isNotEmpty()) t.activeCard else t.surface)
-        }
+        aiKeyCard.background = makeCardDrawable(
+            fillColor = if (key.isNotEmpty()) t.activeCard else t.surface,
+            strokeColor = if (t.isNothingStyle && key.isNotEmpty()) t.accentBg else t.borderColor
+        )
         aiKeyTitle.setTextColor(t.textPrimary)
         aiKeyStatus.setTextColor(t.textSecondary)
         aiKeyStatus.text = if (key.isNotEmpty()) {
@@ -2871,16 +3112,28 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun applyTheme() {
         val t = currentTheme
+        val dotOn = t.isNothingStyle
+
         rootLayout.setBackgroundColor(t.bg)
         window.statusBarColor = t.bg
         window.navigationBarColor = t.navBg
 
+        topHeaderView.dotMode = dotOn
+        speedBtn.dotMode = dotOn
+        timerBtn.dotMode = dotOn
+        elapsedTimeView.dotMode = dotOn
+        remainingTimeView.dotMode = dotOn
+        bookProgressTextView.dotMode = dotOn
+        settingsTitleView.dotMode = dotOn
+
         topHeaderView.setTextColor(t.textPrimary)
         authorSubView.setTextColor(t.textPrimary)
         bookTitleView.setTextColor(t.textSecondary)
+
         val currentCoverBmp = (coverView.drawable as? BitmapDrawable)?.bitmap
         updateCoverGlowColor(currentCoverBmp)
         coverView.setBackgroundColor(t.surface)
+
         speedBtn.setTextColor(t.textPrimary)
         back15Btn.setColorFilter(t.textPrimary, PorterDuff.Mode.SRC_IN)
         fwd30Btn.setColorFilter(t.textPrimary, PorterDuff.Mode.SRC_IN)
@@ -2895,13 +3148,14 @@ class MainActivity : Activity(), SensorEventListener {
         remainingTimeView.setTextColor(t.textSecondary)
         seekBar.progressTintList = ColorStateList.valueOf(t.accentBg)
         seekBar.thumbTintList = ColorStateList.valueOf(t.accentBg)
-        bookProgressTextView.setTextColor(t.textSecondary)
+        bookProgressTextView.setTextColor(if (dotOn) t.accentBg else t.textSecondary)
         updateTimerButton()
+        updateBookProgressUI()
 
-        searchBarContainer.background = GradientDrawable().apply {
-            cornerRadius = dp(12).toFloat()
-            setColor(t.surface)
-        }
+        searchBarContainer.background = makeCardDrawable(
+            fillColor = t.surface,
+            radiusDp = if (dotOn) 20 else 12
+        )
         searchInput.setTextColor(t.textPrimary)
         searchInput.setHintTextColor(t.textSecondary)
         clearSearchBtn.setTextColor(t.textSecondary)
@@ -2916,10 +3170,7 @@ class MainActivity : Activity(), SensorEventListener {
         rewindSectionLabel.setTextColor(t.textSecondary)
         aiSectionLabel.setTextColor(t.textSecondary)
         helpSectionLabel.setTextColor(t.textSecondary)
-        helpCard.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(t.surface)
-        }
+        helpCard.background = makeCardDrawable(fillColor = t.surface)
         helpCardTitle.setTextColor(t.textPrimary)
         helpCardSubtitle.setTextColor(t.textSecondary)
         rebuildThemeButtons()
@@ -2937,6 +3188,7 @@ class MainActivity : Activity(), SensorEventListener {
             "dark" -> Color.parseColor("#2A2A32")
             "light" -> Color.parseColor("#F5F6F8")
             "dark_green" -> Color.parseColor("#66BB6A")
+            "nothing" -> Color.parseColor("#D71921")
             else -> themeOption.accentBg
         }
     }
@@ -2950,10 +3202,10 @@ class MainActivity : Activity(), SensorEventListener {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(18), dp(14), dp(18), dp(14))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(14).toFloat()
-                    setColor(if (isSelected) t.activeCard else t.surface)
-                }
+                background = makeCardDrawable(
+                    fillColor = if (isSelected) t.activeCard else t.surface,
+                    strokeColor = if (t.isNothingStyle && isSelected) t.accentBg else t.borderColor
+                )
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -2967,6 +3219,7 @@ class MainActivity : Activity(), SensorEventListener {
                         .putString("app_theme", themeOption.id)
                         .apply()
                     applyTheme()
+                    if (currentTab == 1) renderFilteredLibrary()
                 }
             }
 
@@ -2974,7 +3227,7 @@ class MainActivity : Activity(), SensorEventListener {
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
                     setColor(themeSwatchColor(themeOption))
-                    setStroke(dp(2), t.textSecondary)
+                    setStroke(dp(2), if (themeOption.id == "nothing") Color.WHITE else t.textSecondary)
                 }
                 layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
                     marginEnd = dp(14)
@@ -3011,10 +3264,10 @@ class MainActivity : Activity(), SensorEventListener {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
                 setPadding(dp(14), dp(12), dp(14), dp(12))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(14).toFloat()
-                    setColor(if (isSelected) t.activeCard else t.surface)
-                }
+                background = makeCardDrawable(
+                    fillColor = if (isSelected) t.activeCard else t.surface,
+                    strokeColor = if (t.isNothingStyle && isSelected) t.accentBg else t.borderColor
+                )
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -3423,7 +3676,10 @@ class MainActivity : Activity(), SensorEventListener {
             background = GradientDrawable().apply {
                 cornerRadius = dp(14).toFloat()
                 setColor(t.surface)
-                if (isActive) setStroke(dp(2), t.accentBg)
+                when {
+                    isActive -> setStroke(dp(2), t.accentBg)
+                    t.isNothingStyle -> setStroke(dp(1), t.borderColor)
+                }
             }
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
@@ -3598,10 +3854,10 @@ class MainActivity : Activity(), SensorEventListener {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(if (isActive) t.activeCard else t.surface)
-            }
+            background = makeCardDrawable(
+                fillColor = if (isActive) t.activeCard else t.surface,
+                strokeColor = if (t.isNothingStyle && isActive) t.accentBg else t.borderColor
+            )
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
